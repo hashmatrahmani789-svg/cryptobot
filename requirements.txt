@@ -1,0 +1,4 @@
+pycoingecko
+python-binance
+pandas
+requests
