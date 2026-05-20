@@ -1,23 +1,21 @@
-from pycoingecko import CoinGeckoAPI
-from binance.client import Client
+import ccxt
 import pandas as pd
+from pycoingecko import CoinGeckoAPI
 import requests
 import time
 
-# CoinGecko
+# CoinGecko for market cap filtering
 cg = CoinGeckoAPI()
 
-# Binance fix
-client = Client("", "")
-client.API_URL = "https://api.binance.com/api"
+# Bybit exchange
+exchange = ccxt.bybit()
 
-# TELEGRAM
+# Telegram
 BOT_TOKEN = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID = "8118939134"
 
 
 def send_telegram(message):
-
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     data = {
@@ -28,7 +26,7 @@ def send_telegram(message):
     requests.post(url, data=data)
 
 
-# Startup message
+# Startup test
 send_telegram("✅ Crypto Scanner Started")
 
 
@@ -49,86 +47,64 @@ while True:
 
             market_cap = coin["market_cap"]
 
-            # Skip coins under 500M market cap
+            # Skip coins below 500M market cap
             if market_cap is None or market_cap < 500000000:
                 continue
 
-            symbol = coin["symbol"].upper() + "USDT"
+            symbol = coin["symbol"].upper() + "/USDT"
 
             try:
 
-                klines = client.get_klines(
-                    symbol=symbol,
-                    interval=Client.KLINE_INTERVAL_1HOUR,
+                candles = exchange.fetch_ohlcv(
+                    symbol,
+                    timeframe="1h",
                     limit=50
                 )
 
                 df = pd.DataFrame(
-                    klines,
+                    candles,
                     columns=[
                         "time",
                         "open",
                         "high",
                         "low",
                         "close",
-                        "volume",
-                        "a",
-                        "b",
-                        "c",
-                        "d",
-                        "e",
-                        "f"
+                        "volume"
                     ]
                 )
 
                 df["close"] = df["close"].astype(float)
                 df["volume"] = df["volume"].astype(float)
 
-                # EMA calculations
+                # EMA
                 df["ema12"] = df["close"].ewm(span=12).mean()
                 df["ema21"] = df["close"].ewm(span=21).mean()
 
-                # Average volume
+                # Volume average
                 avg_volume = df["volume"].rolling(20).mean()
 
+                # Bullish signal
                 bullish = (
-
-                    df["ema12"].iloc[-1]
-                    >
+                    df["ema12"].iloc[-1] >
                     df["ema21"].iloc[-1]
-
                     and
-
-                    df["ema12"].iloc[-2]
-                    <=
+                    df["ema12"].iloc[-2] <=
                     df["ema21"].iloc[-2]
-
                     and
-
-                    df["volume"].iloc[-1]
-                    >
+                    df["volume"].iloc[-1] >
                     avg_volume.iloc[-1] * 1.5
-
                 )
 
+                # Bearish signal
                 bearish = (
-
-                    df["ema12"].iloc[-1]
-                    <
+                    df["ema12"].iloc[-1] <
                     df["ema21"].iloc[-1]
-
                     and
-
-                    df["ema12"].iloc[-2]
-                    >=
+                    df["ema12"].iloc[-2] >=
                     df["ema21"].iloc[-2]
-
                     and
-
-                    df["volume"].iloc[-1]
-                    >
+                    df["volume"].iloc[-1] >
                     avg_volume.iloc[-1] * 1.5
-
                 )
 
                 if bullish:
