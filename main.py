@@ -4,10 +4,14 @@ import pandas as pd
 import requests
 import time
 
+# CoinGecko
 cg = CoinGeckoAPI()
-client = Client()
 
-# PUT YOUR REAL VALUES HERE
+# Binance fix
+client = Client("", "")
+client.API_URL = "https://api.binance.com/api"
+
+# TELEGRAM
 BOT_TOKEN = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID = "8118939134"
 
@@ -24,7 +28,7 @@ def send_telegram(message):
     requests.post(url, data=data)
 
 
-# Startup test message
+# Startup message
 send_telegram("✅ Crypto Scanner Started")
 
 
@@ -45,7 +49,7 @@ while True:
 
             market_cap = coin["market_cap"]
 
-            # Skip coins below 500M market cap
+            # Skip coins under 500M market cap
             if market_cap is None or market_cap < 500000000:
                 continue
 
@@ -62,23 +66,31 @@ while True:
                 df = pd.DataFrame(
                     klines,
                     columns=[
-                        "time","open","high","low",
-                        "close","volume",
-                        "a","b","c","d","e","f"
+                        "time",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "a",
+                        "b",
+                        "c",
+                        "d",
+                        "e",
+                        "f"
                     ]
                 )
 
                 df["close"] = df["close"].astype(float)
                 df["volume"] = df["volume"].astype(float)
 
-                # EMA
+                # EMA calculations
                 df["ema12"] = df["close"].ewm(span=12).mean()
                 df["ema21"] = df["close"].ewm(span=21).mean()
 
                 # Average volume
                 avg_volume = df["volume"].rolling(20).mean()
 
-                # Bullish signal
                 bullish = (
 
                     df["ema12"].iloc[-1]
@@ -99,7 +111,6 @@ while True:
 
                 )
 
-                # Bearish signal
                 bearish = (
 
                     df["ema12"].iloc[-1]
@@ -146,8 +157,8 @@ while True:
                     print(msg)
                     send_telegram(msg)
 
-            except:
-                pass
+            except Exception as e:
+                print(f"{symbol}: {e}")
 
     except Exception as e:
         print(e)
