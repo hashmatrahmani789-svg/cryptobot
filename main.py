@@ -1,144 +1,83 @@
 import ccxt
-import pandas as pd
-from pycoingecko import CoinGeckoAPI
-import requests
+import telebot
 import time
 
-# CoinGecko for market cap filtering
-cg = CoinGeckoAPI()
-
-# Bybit exchange
-exchange = ccxt.bybit()
-
-# Telegram
+# ===== TELEGRAM =====
 BOT_TOKEN = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID = "8118939134"
 
+bot = telebot.TeleBot(BOT_TOKEN)
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+# ===== EXCHANGE =====
+exchange = ccxt.binance({
+    'enableRateLimit': True
+})
 
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
+# Coins to scan
+symbols = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "DOGE/USDT",
+    "XRP/USDT",
+    "ADA/USDT"
+]
 
-    requests.post(url, data=data)
+# Prevent spam
+last_alert = {}
 
-
-# Startup test
-send_telegram("✅ Crypto Scanner Started")
-
+bot.send_message(CHAT_ID, "🚀 Crypto Scanner Started")
 
 while True:
-
-    print("\nScanning market...\n")
-
     try:
+        print("Scanning market...")
 
-        coins = cg.get_coins_markets(
-            vs_currency="usd",
-            order="market_cap_desc",
-            per_page=100,
-            page=1
-        )
-
-        for coin in coins:
-
-            market_cap = coin["market_cap"]
-
-            # Skip coins below 500M market cap
-            if market_cap is None or market_cap < 500000000:
-                continue
-
-            symbol = coin["symbol"].upper() + "/USDT"
-
+        for symbol in symbols:
             try:
-
                 candles = exchange.fetch_ohlcv(
                     symbol,
-                    timeframe="1h",
-                    limit=50
+                    timeframe='5m',
+                    limit=20
                 )
 
-                df = pd.DataFrame(
-                    candles,
-                    columns=[
-                        "time",
-                        "open",
-                        "high",
-                        "low",
-                        "close",
-                        "volume"
-                    ]
-                )
+                closes = [candle[4] for candle in candles]
 
-                df["close"] = df["close"].astype(float)
-                df["volume"] = df["volume"].astype(float)
+                current_price = closes[-1]
+                average_price = sum(closes[:-1]) / (len(closes)-1)
 
-                # EMA
-                df["ema12"] = df["close"].ewm(span=12).mean()
-                df["ema21"] = df["close"].ewm(span=21).mean()
+                percent_change = (
+                    (current_price - average_price)
+                    / average_price
+                ) * 100
 
-                # Volume average
-                avg_volume = df["volume"].rolling(20).mean()
+                print(f"{symbol}: {round(percent_change,2)}%")
 
-                # Bullish signal
-                bullish = (
-                    df["ema12"].iloc[-1] >
-                    df["ema21"].iloc[-1]
-                    and
-                    df["ema12"].iloc[-2] <=
-                    df["ema21"].iloc[-2]
-                    and
-                    df["volume"].iloc[-1] >
-                    avg_volume.iloc[-1] * 1.5
-                )
+                # Alert if move > 2%
+                if abs(percent_change) >= 2:
 
-                # Bearish signal
-                bearish = (
-                    df["ema12"].iloc[-1] <
-                    df["ema21"].iloc[-1]
-                    and
-                    df["ema12"].iloc[-2] >=
-                    df["ema21"].iloc[-2]
-                    and
-                    df["volume"].iloc[-1] >
-                    avg_volume.iloc[-1] * 1.5
-                )
-
-                if bullish:
-
-                    msg = (
-                        f"🚀 BULLISH SIGNAL\n\n"
+                    alert_text = (
+                        f"🔥 ALERT\n\n"
                         f"Coin: {symbol}\n"
-                        f"Timeframe: 1H\n"
-                        f"EMA12 crossed above EMA21\n"
-                        f"Volume > 1.5x average"
+                        f"Price: ${round(current_price,4)}\n"
+                        f"Move: {round(percent_change,2)}%"
                     )
 
-                    print(msg)
-                    send_telegram(msg)
+                    # stop repeat alerts
+                    if last_alert.get(symbol) != round(percent_change):
 
-                if bearish:
+                        bot.send_message(
+                            CHAT_ID,
+                            alert_text
+                        )
 
-                    msg = (
-                        f"📉 BEARISH SIGNAL\n\n"
-                        f"Coin: {symbol}\n"
-                        f"Timeframe: 1H\n"
-                        f"EMA12 crossed below EMA21\n"
-                        f"Volume > 1.5x average"
-                    )
-
-                    print(msg)
-                    send_telegram(msg)
+                        last_alert[symbol] = round(percent_change)
 
             except Exception as e:
-                print(f"{symbol}: {e}")
+                print(f"{symbol} error: {e}")
+
+        print("Waiting 300 seconds...")
+        time.sleep(300)
 
     except Exception as e:
-        print(e)
-
-    print("\nWaiting 300 seconds...\n")
-
-    time.sleep(300)
+        print("Main loop error:", e)
+        time.sleep(60)
