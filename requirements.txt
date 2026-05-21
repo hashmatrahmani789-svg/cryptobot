@@ -1,4 +1,5 @@
-pycoingecko
-python-binance
-pandas
+ccxt
+pyTelegramBotAPI
 requests
+pycoingecko
+pandas
