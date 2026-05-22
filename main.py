@@ -2,17 +2,21 @@
 import pandas as pd
 import numpy as np
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 BOT_TOKEN = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID   = "8118939134"
 
-MARKET_CAP_MIN    = 500_000_000   # $500M
-VOLUME_MULTIPLIER = 1.5           # 1.5x average volume
+MARKET_CAP_MIN    = 500_000_000
+VOLUME_MULTIPLIER = 1.5
 EMA_FAST          = 12
 EMA_SLOW          = 21
-SCAN_INTERVAL     = 15 * 60       # every 15 minutes
+SCAN_INTERVAL     = 15 * 60
+
+# CVD thresholds
+CVD_MIN_PRICE_CHANGE_PCT = 0.5   # price must move at least 0.5%
+CVD_MIN_DELTA_RATIO      = 0.02  # CVD change must be at least 2% of avg volume
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -63,8 +67,8 @@ def get_ohlcv_binance_futures(symbol, interval="1h", limit=100):
         "close_time","quote_vol","trades",
         "taker_buy_base","taker_buy_quote","ignore"
     ])
-    df["close"]  = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    df["close"]          = df["close"].astype(float)
+    df["volume"]         = df["volume"].astype(float)
     df["taker_buy_base"] = df["taker_buy_base"].astype(float)
     return df
 
@@ -83,8 +87,8 @@ def get_ohlcv_binance_spot(symbol, interval="1h", limit=100):
         "close_time","quote_vol","trades",
         "taker_buy_base","taker_buy_quote","ignore"
     ])
-    df["close"]  = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    df["close"]          = df["close"].astype(float)
+    df["volume"]         = df["volume"].astype(float)
     df["taker_buy_base"] = df["taker_buy_base"].astype(float)
     return df
 
@@ -103,9 +107,9 @@ def get_ohlcv_bybit(symbol, interval="60", limit=100):
         return None
     rows = rows[::-1]
     df = pd.DataFrame(rows, columns=["time","open","high","low","close","volume","turnover"])
-    df["close"]  = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
-    df["taker_buy_base"] = df["volume"] * 0.5  # bybit doesn't give taker buy, estimate
+    df["close"]          = df["close"].astype(float)
+    df["volume"]         = df["volume"].astype(float)
+    df["taker_buy_base"] = df["volume"] * 0.5
     return df
 
 
@@ -120,14 +124,13 @@ def get_ohlcv_okx(symbol, interval="1H", limit=100):
         return None
     rows = data["data"][::-1]
     df = pd.DataFrame(rows, columns=["time","open","high","low","close","volume","quote_vol","taker_buy_base","taker_buy_quote"])
-    df["close"]  = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    df["close"]          = df["close"].astype(float)
+    df["volume"]         = df["volume"].astype(float)
     df["taker_buy_base"] = df["taker_buy_base"].astype(float)
     return df
 
 
 def get_ohlcv(symbol):
-    """Try exchanges in order: Binance Futures → Binance Spot → Bybit → OKX"""
     for fn, name in [
         (get_ohlcv_binance_futures, "binance_futures"),
         (get_ohlcv_binance_spot,    "binance_spot"),
@@ -144,7 +147,6 @@ def get_ohlcv(symbol):
 
 
 def get_open_interest_binance(symbol):
-    """Get OI history from Binance Futures"""
     url = "https://fapi.binance.com/futures/data/openInterestHist"
     params = {"symbol": f"{symbol}USDT", "period": "1h", "limit": 5}
     r = requests.get(url, params=params, timeout=10)
@@ -163,10 +165,6 @@ def calc_ema(series, period):
 
 
 def calc_cvd(df):
-    """
-    Cumulative Volume Delta = cumsum of (taker buy volume - taker sell volume)
-    Taker sell volume = total volume - taker buy volume
-    """
     df = df.copy()
     df["delta"] = df["taker_buy_base"] - (df["volume"] - df["taker_buy_base"])
     df["cvd"]   = df["delta"].cumsum()
@@ -175,7 +173,7 @@ def calc_cvd(df):
 
 # ── SIGNAL 1: EMA CROSS + VOLUME ─────────────────────────────────────────────
 
-def check_ema_signal(df, symbol):
+def check_ema_signal(df):
     df = df.copy()
     df["ema_fast"] = calc_ema(df["close"], EMA_FAST)
     df["ema_slow"] = calc_ema(df["close"], EMA_SLOW)
@@ -204,10 +202,9 @@ def check_oi_signal(symbol, current_price, prev_price):
     if not oi_list or len(oi_list) < 2:
         return None, None
 
-    oi_change = (oi_list[-1] - oi_list[-2]) / oi_list[-2] * 100  # % change
+    oi_change    = (oi_list[-1] - oi_list[-2]) / oi_list[-2] * 100
     price_change = (current_price - prev_price) / prev_price * 100
 
-    # Only signal if OI changed by at least 1%
     if abs(oi_change) < 1.0:
         return None, None
 
@@ -221,24 +218,33 @@ def check_oi_signal(symbol, current_price, prev_price):
 
 # ── SIGNAL 3: CVD DIVERGENCE ─────────────────────────────────────────────────
 
-def check_cvd_signal(df, symbol):
+def check_cvd_signal(df):
     df = calc_cvd(df)
 
-    # Look at last 5 closed candles
     recent = df.iloc[-6:-1]
 
-    price_change = recent["close"].iloc[-1] - recent["close"].iloc[0]
-    cvd_change   = recent["cvd"].iloc[-1]   - recent["cvd"].iloc[0]
+    start_price = recent["close"].iloc[0]
+    end_price   = recent["close"].iloc[-1]
+    avg_vol     = recent["volume"].mean()
 
-    # Divergence: price and CVD moving in opposite directions
-    bullish_div = price_change < 0 and cvd_change > 0   # price down, CVD up = hidden buying
-    bearish_div = price_change > 0 and cvd_change < 0   # price up, CVD down = hidden selling
+    price_change_pct = (end_price - start_price) / start_price * 100
+    cvd_change       = recent["cvd"].iloc[-1] - recent["cvd"].iloc[0]
+    cvd_ratio        = abs(cvd_change) / avg_vol if avg_vol else 0
+
+    # ✅ Only fire if price moved enough AND CVD divergence is strong enough
+    if abs(price_change_pct) < CVD_MIN_PRICE_CHANGE_PCT:
+        return None, price_change_pct, cvd_change
+    if cvd_ratio < CVD_MIN_DELTA_RATIO:
+        return None, price_change_pct, cvd_change
+
+    bullish_div = price_change_pct < 0 and cvd_change > 0
+    bearish_div = price_change_pct > 0 and cvd_change < 0
 
     if bullish_div:
-        return "bullish", price_change, cvd_change
+        return "bullish", price_change_pct, cvd_change
     if bearish_div:
-        return "bearish", price_change, cvd_change
-    return None, price_change, cvd_change
+        return "bearish", price_change_pct, cvd_change
+    return None, price_change_pct, cvd_change
 
 
 # ── SCAN ─────────────────────────────────────────────────────────────────────
@@ -262,20 +268,20 @@ def scan():
             curr_price = float(df.iloc[-2]["close"])
             prev_price = float(df.iloc[-3]["close"])
 
-            # ── Signal 1: EMA Cross
-            ema_dir, vol_ratio, _ = check_ema_signal(df, symbol)
+            # Signal 1: EMA Cross
+            ema_dir, vol_ratio, _ = check_ema_signal(df)
             print(f"    {symbol} [{market}] | EMA={ema_dir or 'none'} | Vol={vol_ratio:.2f}x")
             if ema_dir:
                 ema_signals.append({"symbol": symbol, "direction": ema_dir, "vol_ratio": vol_ratio, "price": curr_price, "market_cap": coin["market_cap"], "market": market})
 
-            # ── Signal 2: OI + Price (futures only)
+            # Signal 2: OI + Price
             if "binance" in market or market == "bybit":
                 oi_dir, oi_change = check_oi_signal(symbol, curr_price, prev_price)
                 if oi_dir:
                     oi_signals.append({"symbol": symbol, "direction": oi_dir, "oi_change": oi_change, "price": curr_price, "market_cap": coin["market_cap"]})
 
-            # ── Signal 3: CVD Divergence
-            cvd_dir, price_chg, cvd_chg = check_cvd_signal(df, symbol)
+            # Signal 3: CVD Divergence
+            cvd_dir, price_chg, cvd_chg = check_cvd_signal(df)
             if cvd_dir:
                 cvd_signals.append({"symbol": symbol, "direction": cvd_dir, "price_change": price_chg, "cvd_change": cvd_chg, "price": curr_price, "market_cap": coin["market_cap"]})
 
@@ -286,7 +292,7 @@ def scan():
 
     print(f"\n  -> EMA signals: {len(ema_signals)} | OI signals: {len(oi_signals)} | CVD signals: {len(cvd_signals)}")
 
-    # ── Send EMA Alerts
+    # Send EMA Alerts
     for s in ema_signals:
         emoji = "🚀" if s["direction"] == "bullish" else "🔻"
         direction_text = "EMA 12 crossed ABOVE EMA 21 (Bullish)" if s["direction"] == "bullish" else "EMA 12 crossed BELOW EMA 21 (Bearish)"
@@ -298,12 +304,12 @@ def scan():
             f"📊 Market Cap : `${s['market_cap']/1e9:.2f}B`\n"
             f"📈 {direction_text}\n"
             f"🔊 Volume     : `{s['vol_ratio']:.2f}x` average\n"
-            f"⏰ Time (UTC) : `{datetime.utcnow().strftime('%Y-%m-%d %H:%M')}`"
+            f"⏰ Time (UTC) : `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
         )
         send_telegram(msg)
         time.sleep(0.5)
 
-    # ── Send OI Alerts
+    # Send OI Alerts
     for s in oi_signals:
         emoji = "📈" if s["direction"] == "bullish" else "📉"
         detail = "Price UP + OI UP = Real buying pressure" if s["direction"] == "bullish" else "Price DOWN + OI UP = Real selling pressure"
@@ -315,12 +321,12 @@ def scan():
             f"📊 Market Cap : `${s['market_cap']/1e9:.2f}B`\n"
             f"💹 {detail}\n"
             f"📊 OI Change  : `{s['oi_change']:+.2f}%`\n"
-            f"⏰ Time (UTC) : `{datetime.utcnow().strftime('%Y-%m-%d %H:%M')}`"
+            f"⏰ Time (UTC) : `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
         )
         send_telegram(msg)
         time.sleep(0.5)
 
-    # ── Send CVD Alerts
+    # Send CVD Alerts
     for s in cvd_signals:
         emoji = "🔍" if s["direction"] == "bullish" else "⚠️"
         detail = "CVD rising while price dipping = Hidden buying" if s["direction"] == "bullish" else "CVD falling while price rising = Hidden selling"
@@ -331,7 +337,8 @@ def scan():
             f"💰 Price      : `${s['price']:,.4f}`\n"
             f"📊 Market Cap : `${s['market_cap']/1e9:.2f}B`\n"
             f"⚡ {detail}\n"
-            f"⏰ Time (UTC) : `{datetime.utcnow().strftime('%Y-%m-%d %H:%M')}`"
+            f"📉 Price Change: `{s['price_change']:+.2f}%`\n"
+            f"⏰ Time (UTC) : `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
         )
         send_telegram(msg)
         time.sleep(0.5)
