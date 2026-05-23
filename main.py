@@ -8,16 +8,25 @@ from datetime import datetime, timezone
 BOT_TOKEN = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID   = "8118939134"
 
-MARKET_CAP_MIN    = 500_000_000
-VOLUME_MULTIPLIER = 1.5
+MARKET_CAP_MIN    = 1_000_000_000   # raised from $500M → $1B
+VOLUME_MULTIPLIER = 2.0             # raised from 1.5x → 2.0x
 EMA_FAST          = 12
 EMA_SLOW          = 21
 SCAN_INTERVAL     = 15 * 60
 
-# CVD thresholds
-CVD_MIN_PRICE_CHANGE_PCT = 0.5   # price must move at least 0.5%
-CVD_MIN_DELTA_RATIO      = 0.02  # CVD change must be at least 2% of avg volume
+# CVD thresholds (middle ground)
+CVD_MIN_PRICE_CHANGE_PCT = 1.5    # raised from 0.5% → 1.5%
+CVD_MIN_DELTA_RATIO      = 0.10   # raised from 0.02 → 0.10
+
+# OI threshold (middle ground)
+OI_MIN_CHANGE_PCT        = 2.0    # raised from 1.0% → 2.0%
+OI_MIN_PRICE_CHANGE_PCT  = 1.5    # new — price must move 1.5% for OI signal to fire
+
+# Cooldown — same coin cannot alert again within 1 hour (any signal type)
+COOLDOWN_SEC = 3600
 # ────────────────────────────────────────────────────────────────────────────
+
+last_alerted = {}   # {symbol: last_alert_timestamp}
 
 
 def send_telegram(msg):
@@ -28,12 +37,29 @@ def send_telegram(msg):
         print(f"    Telegram error: {e}")
 
 
+def is_on_cooldown(symbol):
+    now = time.time()
+    if symbol in last_alerted and now - last_alerted[symbol] < COOLDOWN_SEC:
+        return True
+    return False
+
+
+def mark_alerted(symbol):
+    last_alerted[symbol] = time.time()
+
+
 def get_coins_above_market_cap():
     coins = []
     page  = 1
     while True:
         url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page, "sparkline": False}
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": 250,
+            "page": page,
+            "sparkline": False,
+        }
         r    = requests.get(url, params=params, timeout=30)
         data = r.json()
         if not data:
@@ -42,12 +68,16 @@ def get_coins_above_market_cap():
             mc = coin.get("market_cap") or 0
             if mc < MARKET_CAP_MIN:
                 break
-            coins.append({"id": coin["id"], "symbol": coin["symbol"].upper(), "market_cap": mc})
+            coins.append({
+                "id": coin["id"],
+                "symbol": coin["symbol"].upper(),
+                "market_cap": mc,
+            })
         if (data[-1].get("market_cap") or 0) < MARKET_CAP_MIN:
             break
         page += 1
         time.sleep(1.2)
-    print(f"  -> {len(coins)} coins above $500M market cap")
+    print(f"  -> {len(coins)} coins above $1B market cap")
     return coins
 
 
@@ -95,7 +125,12 @@ def get_ohlcv_binance_spot(symbol, interval="1h", limit=100):
 
 def get_ohlcv_bybit(symbol, interval="60", limit=100):
     url = "https://api.bybit.com/v5/market/kline"
-    params = {"category": "linear", "symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
+    params = {
+        "category": "linear",
+        "symbol": f"{symbol}USDT",
+        "interval": interval,
+        "limit": limit,
+    }
     r = requests.get(url, params=params, timeout=10)
     if r.status_code != 200:
         return None
@@ -123,7 +158,10 @@ def get_ohlcv_okx(symbol, interval="1H", limit=100):
     if data.get("code") != "0" or not data.get("data"):
         return None
     rows = data["data"][::-1]
-    df = pd.DataFrame(rows, columns=["time","open","high","low","close","volume","quote_vol","taker_buy_base","taker_buy_quote"])
+    df = pd.DataFrame(rows, columns=[
+        "time","open","high","low","close","volume",
+        "quote_vol","taker_buy_base","taker_buy_quote"
+    ])
     df["close"]          = df["close"].astype(float)
     df["volume"]         = df["volume"].astype(float)
     df["taker_buy_base"] = df["taker_buy_base"].astype(float)
@@ -205,7 +243,10 @@ def check_oi_signal(symbol, current_price, prev_price):
     oi_change    = (oi_list[-1] - oi_list[-2]) / oi_list[-2] * 100
     price_change = (current_price - prev_price) / prev_price * 100
 
-    if abs(oi_change) < 1.0:
+    # Both OI and price change must be meaningful
+    if abs(oi_change) < OI_MIN_CHANGE_PCT:
+        return None, None
+    if abs(price_change) < OI_MIN_PRICE_CHANGE_PCT:
         return None, None
 
     if oi_change > 0 and price_change > 0:
@@ -221,7 +262,7 @@ def check_oi_signal(symbol, current_price, prev_price):
 def check_cvd_signal(df):
     df = calc_cvd(df)
 
-    recent = df.iloc[-6:-1]
+    recent = df.iloc[-11:-1]   # last 10 candles (raised from 5)
 
     start_price = recent["close"].iloc[0]
     end_price   = recent["close"].iloc[-1]
@@ -231,7 +272,6 @@ def check_cvd_signal(df):
     cvd_change       = recent["cvd"].iloc[-1] - recent["cvd"].iloc[0]
     cvd_ratio        = abs(cvd_change) / avg_vol if avg_vol else 0
 
-    # ✅ Only fire if price moved enough AND CVD divergence is strong enough
     if abs(price_change_pct) < CVD_MIN_PRICE_CHANGE_PCT:
         return None, price_change_pct, cvd_change
     if cvd_ratio < CVD_MIN_DELTA_RATIO:
@@ -271,19 +311,36 @@ def scan():
             # Signal 1: EMA Cross
             ema_dir, vol_ratio, _ = check_ema_signal(df)
             print(f"    {symbol} [{market}] | EMA={ema_dir or 'none'} | Vol={vol_ratio:.2f}x")
-            if ema_dir:
-                ema_signals.append({"symbol": symbol, "direction": ema_dir, "vol_ratio": vol_ratio, "price": curr_price, "market_cap": coin["market_cap"], "market": market})
+            if ema_dir and not is_on_cooldown(symbol):
+                ema_signals.append({
+                    "symbol": symbol, "direction": ema_dir,
+                    "vol_ratio": vol_ratio, "price": curr_price,
+                    "market_cap": coin["market_cap"], "market": market,
+                })
+                mark_alerted(symbol)
 
             # Signal 2: OI + Price
             if "binance" in market or market == "bybit":
-                oi_dir, oi_change = check_oi_signal(symbol, curr_price, prev_price)
-                if oi_dir:
-                    oi_signals.append({"symbol": symbol, "direction": oi_dir, "oi_change": oi_change, "price": curr_price, "market_cap": coin["market_cap"]})
+                if not is_on_cooldown(symbol):
+                    oi_dir, oi_change = check_oi_signal(symbol, curr_price, prev_price)
+                    if oi_dir:
+                        oi_signals.append({
+                            "symbol": symbol, "direction": oi_dir,
+                            "oi_change": oi_change, "price": curr_price,
+                            "market_cap": coin["market_cap"],
+                        })
+                        mark_alerted(symbol)
 
             # Signal 3: CVD Divergence
-            cvd_dir, price_chg, cvd_chg = check_cvd_signal(df)
-            if cvd_dir:
-                cvd_signals.append({"symbol": symbol, "direction": cvd_dir, "price_change": price_chg, "cvd_change": cvd_chg, "price": curr_price, "market_cap": coin["market_cap"]})
+            if not is_on_cooldown(symbol):
+                cvd_dir, price_chg, cvd_chg = check_cvd_signal(df)
+                if cvd_dir:
+                    cvd_signals.append({
+                        "symbol": symbol, "direction": cvd_dir,
+                        "price_change": price_chg, "cvd_change": cvd_chg,
+                        "price": curr_price, "market_cap": coin["market_cap"],
+                    })
+                    mark_alerted(symbol)
 
         except Exception as e:
             print(f"    {symbol} | Error: {e}")
@@ -292,10 +349,14 @@ def scan():
 
     print(f"\n  -> EMA signals: {len(ema_signals)} | OI signals: {len(oi_signals)} | CVD signals: {len(cvd_signals)}")
 
-    # Send EMA Alerts
+    # ── Send EMA Alerts ───────────────────────────────────────────────────────
     for s in ema_signals:
         emoji = "🚀" if s["direction"] == "bullish" else "🔻"
-        direction_text = "EMA 12 crossed ABOVE EMA 21 (Bullish)" if s["direction"] == "bullish" else "EMA 12 crossed BELOW EMA 21 (Bearish)"
+        direction_text = (
+            "EMA 12 crossed ABOVE EMA 21 (Bullish)"
+            if s["direction"] == "bullish"
+            else "EMA 12 crossed BELOW EMA 21 (Bearish)"
+        )
         msg = (
             f"{emoji} *EMA CROSS SIGNAL*\n"
             f"────────────────────\n"
@@ -309,10 +370,14 @@ def scan():
         send_telegram(msg)
         time.sleep(0.5)
 
-    # Send OI Alerts
+    # ── Send OI Alerts ────────────────────────────────────────────────────────
     for s in oi_signals:
-        emoji = "📈" if s["direction"] == "bullish" else "📉"
-        detail = "Price UP + OI UP = Real buying pressure" if s["direction"] == "bullish" else "Price DOWN + OI UP = Real selling pressure"
+        emoji  = "📈" if s["direction"] == "bullish" else "📉"
+        detail = (
+            "Price UP + OI UP = Real buying pressure"
+            if s["direction"] == "bullish"
+            else "Price DOWN + OI UP = Real selling pressure"
+        )
         msg = (
             f"{emoji} *OI MOMENTUM SIGNAL*\n"
             f"────────────────────\n"
@@ -326,10 +391,14 @@ def scan():
         send_telegram(msg)
         time.sleep(0.5)
 
-    # Send CVD Alerts
+    # ── Send CVD Alerts ───────────────────────────────────────────────────────
     for s in cvd_signals:
-        emoji = "🔍" if s["direction"] == "bullish" else "⚠️"
-        detail = "CVD rising while price dipping = Hidden buying" if s["direction"] == "bullish" else "CVD falling while price rising = Hidden selling"
+        emoji  = "🔍" if s["direction"] == "bullish" else "⚠️"
+        detail = (
+            "CVD rising while price dipping = Hidden buying"
+            if s["direction"] == "bullish"
+            else "CVD falling while price rising = Hidden selling"
+        )
         msg = (
             f"{emoji} *CVD DIVERGENCE SIGNAL*\n"
             f"────────────────────\n"
@@ -353,9 +422,11 @@ if __name__ == "__main__":
         "🤖 *Scanner started!*\n"
         "────────────────────\n"
         "Running 3 signals:\n"
-        "1️⃣ EMA 12/21 Cross + 1.5x Volume\n"
-        "2️⃣ OI + Price Momentum\n"
-        "3️⃣ CVD Divergence\n"
+        "1️⃣ EMA 12/21 Cross + 2.0x Volume\n"
+        "2️⃣ OI + Price Momentum (2% OI / 1.5% Price min)\n"
+        "3️⃣ CVD Divergence (1.5% price / 10% delta min)\n"
+        "🔕 1 hour cooldown per coin\n"
+        "📊 Only coins above $1B market cap\n"
         "Scanning every 15 min 24/7"
     )
 
