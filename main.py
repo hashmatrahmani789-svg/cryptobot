@@ -8,31 +8,32 @@ from datetime import datetime, timezone
 BOT_TOKEN = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID   = "8118939134"
 
-MARKET_CAP_MIN    = 1_000_000_000   # raised from $500M → $1B
-VOLUME_MULTIPLIER = 2.0             # raised from 1.5x → 2.0x
-EMA_FAST          = 12
-EMA_SLOW          = 21
-SCAN_INTERVAL     = 15 * 60
+MARKET_CAP_MIN           = 1_000_000_000   # $1B
+VOLUME_MULTIPLIER        = 2.0
+EMA_FAST                 = 12
+EMA_SLOW                 = 21
+SCAN_INTERVAL            = 15 * 60
 
-# CVD thresholds (middle ground)
-CVD_MIN_PRICE_CHANGE_PCT = 1.5    # raised from 0.5% → 1.5%
-CVD_MIN_DELTA_RATIO      = 0.10   # raised from 0.02 → 0.10
+CVD_MIN_PRICE_CHANGE_PCT = 1.5
+CVD_MIN_DELTA_RATIO      = 0.10
 
-# OI threshold (middle ground)
-OI_MIN_CHANGE_PCT        = 2.0    # raised from 1.0% → 2.0%
-OI_MIN_PRICE_CHANGE_PCT  = 1.5    # new — price must move 1.5% for OI signal to fire
+OI_MIN_CHANGE_PCT        = 2.0
+OI_MIN_PRICE_CHANGE_PCT  = 1.5
 
-# Cooldown — same coin cannot alert again within 1 hour (any signal type)
-COOLDOWN_SEC = 3600
+COOLDOWN_SEC             = 3600
 # ────────────────────────────────────────────────────────────────────────────
 
-last_alerted = {}   # {symbol: last_alert_timestamp}
+last_alerted = {}
 
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+        requests.post(
+            url,
+            json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10,
+        )
     except Exception as e:
         print(f"    Telegram error: {e}")
 
@@ -55,30 +56,39 @@ def get_coins_above_market_cap():
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": 250,
-            "page": page,
-            "sparkline": False,
+            "order":       "market_cap_desc",
+            "per_page":    250,
+            "page":        page,
+            "sparkline":   False,
         }
-        r    = requests.get(url, params=params, timeout=30)
-        data = r.json()
+        try:
+            r    = requests.get(url, params=params, timeout=30)
+            data = r.json()
+        except Exception as e:
+            print(f"  CoinGecko request failed: {e}")
+            break
+
         if not data or not isinstance(data, list):
-        print(f"  CoinGecko returned unexpected response: {data}")
-        time.sleep(10)
-        break
+            print(f"  CoinGecko unexpected response: {data}")
+            time.sleep(10)
+            break
+
         for coin in data:
             mc = coin.get("market_cap") or 0
             if mc < MARKET_CAP_MIN:
                 break
             coins.append({
-                "id": coin["id"],
-                "symbol": coin["symbol"].upper(),
+                "id":         coin["id"],
+                "symbol":     coin["symbol"].upper(),
                 "market_cap": mc,
             })
+
         if (data[-1].get("market_cap") or 0) < MARKET_CAP_MIN:
-        time.sleep(2.0)
+            break
+
         page += 1
-        time.sleep(1.2)
+        time.sleep(2.0)
+
     print(f"  -> {len(coins)} coins above $1B market cap")
     return coins
 
@@ -86,18 +96,18 @@ def get_coins_above_market_cap():
 # ── DATA FETCHING ────────────────────────────────────────────────────────────
 
 def get_ohlcv_binance_futures(symbol, interval="1h", limit=100):
-    url = "https://fapi.binance.com/fapi/v1/klines"
+    url    = "https://fapi.binance.com/fapi/v1/klines"
     params = {"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
-    r = requests.get(url, params=params, timeout=10)
+    r      = requests.get(url, params=params, timeout=10)
     if r.status_code != 200:
         return None
     data = r.json()
     if not data or isinstance(data, dict):
         return None
     df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","quote_vol","trades",
-        "taker_buy_base","taker_buy_quote","ignore"
+        "time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_vol", "trades",
+        "taker_buy_base", "taker_buy_quote", "ignore",
     ])
     df["close"]          = df["close"].astype(float)
     df["volume"]         = df["volume"].astype(float)
@@ -106,18 +116,18 @@ def get_ohlcv_binance_futures(symbol, interval="1h", limit=100):
 
 
 def get_ohlcv_binance_spot(symbol, interval="1h", limit=100):
-    url = "https://api.binance.com/api/v3/klines"
+    url    = "https://api.binance.com/api/v3/klines"
     params = {"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
-    r = requests.get(url, params=params, timeout=10)
+    r      = requests.get(url, params=params, timeout=10)
     if r.status_code != 200:
         return None
     data = r.json()
     if not data or isinstance(data, dict):
         return None
     df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","quote_vol","trades",
-        "taker_buy_base","taker_buy_quote","ignore"
+        "time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_vol", "trades",
+        "taker_buy_base", "taker_buy_quote", "ignore",
     ])
     df["close"]          = df["close"].astype(float)
     df["volume"]         = df["volume"].astype(float)
@@ -126,12 +136,12 @@ def get_ohlcv_binance_spot(symbol, interval="1h", limit=100):
 
 
 def get_ohlcv_bybit(symbol, interval="60", limit=100):
-    url = "https://api.bybit.com/v5/market/kline"
+    url    = "https://api.bybit.com/v5/market/kline"
     params = {
         "category": "linear",
-        "symbol": f"{symbol}USDT",
+        "symbol":   f"{symbol}USDT",
         "interval": interval,
-        "limit": limit,
+        "limit":    limit,
     }
     r = requests.get(url, params=params, timeout=10)
     if r.status_code != 200:
@@ -143,7 +153,9 @@ def get_ohlcv_bybit(symbol, interval="60", limit=100):
     if not rows:
         return None
     rows = rows[::-1]
-    df = pd.DataFrame(rows, columns=["time","open","high","low","close","volume","turnover"])
+    df = pd.DataFrame(rows, columns=[
+        "time", "open", "high", "low", "close", "volume", "turnover"
+    ])
     df["close"]          = df["close"].astype(float)
     df["volume"]         = df["volume"].astype(float)
     df["taker_buy_base"] = df["volume"] * 0.5
@@ -151,9 +163,9 @@ def get_ohlcv_bybit(symbol, interval="60", limit=100):
 
 
 def get_ohlcv_okx(symbol, interval="1H", limit=100):
-    url = "https://www.okx.com/api/v5/market/candles"
+    url    = "https://www.okx.com/api/v5/market/candles"
     params = {"instId": f"{symbol}-USDT-SWAP", "bar": interval, "limit": limit}
-    r = requests.get(url, params=params, timeout=10)
+    r      = requests.get(url, params=params, timeout=10)
     if r.status_code != 200:
         return None
     data = r.json()
@@ -161,8 +173,8 @@ def get_ohlcv_okx(symbol, interval="1H", limit=100):
         return None
     rows = data["data"][::-1]
     df = pd.DataFrame(rows, columns=[
-        "time","open","high","low","close","volume",
-        "quote_vol","taker_buy_base","taker_buy_quote"
+        "time", "open", "high", "low", "close",
+        "volume", "quote_vol", "taker_buy_base", "taker_buy_quote",
     ])
     df["close"]          = df["close"].astype(float)
     df["volume"]         = df["volume"].astype(float)
@@ -187,9 +199,9 @@ def get_ohlcv(symbol):
 
 
 def get_open_interest_binance(symbol):
-    url = "https://fapi.binance.com/futures/data/openInterestHist"
+    url    = "https://fapi.binance.com/futures/data/openInterestHist"
     params = {"symbol": f"{symbol}USDT", "period": "1h", "limit": 5}
-    r = requests.get(url, params=params, timeout=10)
+    r      = requests.get(url, params=params, timeout=10)
     if r.status_code != 200:
         return None
     data = r.json()
@@ -225,8 +237,7 @@ def check_ema_signal(df):
     bullish_cross = (prev["ema_fast"] <= prev["ema_slow"]) and (curr["ema_fast"] > curr["ema_slow"])
     bearish_cross = (prev["ema_fast"] >= prev["ema_slow"]) and (curr["ema_fast"] < curr["ema_slow"])
     vol_confirm   = curr["volume"] >= VOLUME_MULTIPLIER * curr["avg_vol"]
-
-    vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
+    vol_ratio     = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
 
     if bullish_cross and vol_confirm:
         return "bullish", vol_ratio, curr["close"]
@@ -245,7 +256,6 @@ def check_oi_signal(symbol, current_price, prev_price):
     oi_change    = (oi_list[-1] - oi_list[-2]) / oi_list[-2] * 100
     price_change = (current_price - prev_price) / prev_price * 100
 
-    # Both OI and price change must be meaningful
     if abs(oi_change) < OI_MIN_CHANGE_PCT:
         return None, None
     if abs(price_change) < OI_MIN_PRICE_CHANGE_PCT:
@@ -255,21 +265,18 @@ def check_oi_signal(symbol, current_price, prev_price):
         return "bullish", oi_change
     if oi_change > 0 and price_change < 0:
         return "bearish", oi_change
-
     return None, None
 
 
 # ── SIGNAL 3: CVD DIVERGENCE ─────────────────────────────────────────────────
 
 def check_cvd_signal(df):
-    df = calc_cvd(df)
+    df     = calc_cvd(df)
+    recent = df.iloc[-11:-1]
 
-    recent = df.iloc[-11:-1]   # last 10 candles (raised from 5)
-
-    start_price = recent["close"].iloc[0]
-    end_price   = recent["close"].iloc[-1]
-    avg_vol     = recent["volume"].mean()
-
+    start_price      = recent["close"].iloc[0]
+    end_price        = recent["close"].iloc[-1]
+    avg_vol          = recent["volume"].mean()
     price_change_pct = (end_price - start_price) / start_price * 100
     cvd_change       = recent["cvd"].iloc[-1] - recent["cvd"].iloc[0]
     cvd_ratio        = abs(cvd_change) / avg_vol if avg_vol else 0
@@ -299,7 +306,7 @@ def scan():
     oi_signals  = []
     cvd_signals = []
 
-    for i, coin in enumerate(coins):
+    for coin in coins:
         symbol = coin["symbol"]
         try:
             df, market = get_ohlcv(symbol)
@@ -315,9 +322,12 @@ def scan():
             print(f"    {symbol} [{market}] | EMA={ema_dir or 'none'} | Vol={vol_ratio:.2f}x")
             if ema_dir and not is_on_cooldown(symbol):
                 ema_signals.append({
-                    "symbol": symbol, "direction": ema_dir,
-                    "vol_ratio": vol_ratio, "price": curr_price,
-                    "market_cap": coin["market_cap"], "market": market,
+                    "symbol":     symbol,
+                    "direction":  ema_dir,
+                    "vol_ratio":  vol_ratio,
+                    "price":      curr_price,
+                    "market_cap": coin["market_cap"],
+                    "market":     market,
                 })
                 mark_alerted(symbol)
 
@@ -327,8 +337,10 @@ def scan():
                     oi_dir, oi_change = check_oi_signal(symbol, curr_price, prev_price)
                     if oi_dir:
                         oi_signals.append({
-                            "symbol": symbol, "direction": oi_dir,
-                            "oi_change": oi_change, "price": curr_price,
+                            "symbol":     symbol,
+                            "direction":  oi_dir,
+                            "oi_change":  oi_change,
+                            "price":      curr_price,
                             "market_cap": coin["market_cap"],
                         })
                         mark_alerted(symbol)
@@ -338,9 +350,12 @@ def scan():
                 cvd_dir, price_chg, cvd_chg = check_cvd_signal(df)
                 if cvd_dir:
                     cvd_signals.append({
-                        "symbol": symbol, "direction": cvd_dir,
-                        "price_change": price_chg, "cvd_change": cvd_chg,
-                        "price": curr_price, "market_cap": coin["market_cap"],
+                        "symbol":       symbol,
+                        "direction":    cvd_dir,
+                        "price_change": price_chg,
+                        "cvd_change":   cvd_chg,
+                        "price":        curr_price,
+                        "market_cap":   coin["market_cap"],
                     })
                     mark_alerted(symbol)
 
@@ -349,11 +364,11 @@ def scan():
 
         time.sleep(0.15)
 
-    print(f"\n  -> EMA signals: {len(ema_signals)} | OI signals: {len(oi_signals)} | CVD signals: {len(cvd_signals)}")
+    print(f"\n  -> EMA: {len(ema_signals)} | OI: {len(oi_signals)} | CVD: {len(cvd_signals)}")
 
     # ── Send EMA Alerts ───────────────────────────────────────────────────────
     for s in ema_signals:
-        emoji = "🚀" if s["direction"] == "bullish" else "🔻"
+        emoji          = "🚀" if s["direction"] == "bullish" else "🔻"
         direction_text = (
             "EMA 12 crossed ABOVE EMA 21 (Bullish)"
             if s["direction"] == "bullish"
