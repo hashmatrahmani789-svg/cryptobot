@@ -62,8 +62,10 @@ def get_coins_above_market_cap():
         }
         r    = requests.get(url, params=params, timeout=30)
         data = r.json()
-        if not data:
-            break
+        if not data or not isinstance(data, list):
+        print(f"  CoinGecko returned unexpected response: {data}")
+        time.sleep(10)
+        break
         for coin in data:
             mc = coin.get("market_cap") or 0
             if mc < MARKET_CAP_MIN:
@@ -74,7 +76,7 @@ def get_coins_above_market_cap():
                 "market_cap": mc,
             })
         if (data[-1].get("market_cap") or 0) < MARKET_CAP_MIN:
-            break
+        time.sleep(2.0)
         page += 1
         time.sleep(1.2)
     print(f"  -> {len(coins)} coins above $1B market cap")
