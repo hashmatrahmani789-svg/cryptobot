@@ -3,3 +3,4 @@ pyTelegramBotAPI
 requests
 pycoingecko
 pandas
+numpy
