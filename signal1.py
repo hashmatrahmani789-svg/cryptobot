@@ -1,13 +1,19 @@
 import requests
 import pandas as pd
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-BOT_TOKEN      = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
-CHAT_ID        = "8118939134"
-MARKET_CAP_MIN = 500_000_000
-EMA_FAST       = 12
-EMA_SLOW       = 21
+BOT_TOKEN = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
+CHAT_ID   = "8118939134"
+
+MARKET_CAP_MIN    = 1_000_000_000
+VOLUME_MULTIPLIER = 1.2          # was 2.0 — loosened
+EMA_FAST          = 12
+EMA_SLOW          = 21
+SCAN_INTERVAL     = 15 * 60
+COOLDOWN_SEC      = 3600
+
+last_alerted = {}
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -15,6 +21,12 @@ def send_telegram(msg):
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
+
+def is_on_cooldown(symbol):
+    return symbol in last_alerted and time.time() - last_alerted[symbol] < COOLDOWN_SEC
+
+def mark_alerted(symbol):
+    last_alerted[symbol] = time.time()
 
 def get_coins():
     coins = []
@@ -39,88 +51,73 @@ def get_coins():
             break
     return coins
 
-def get_binance_pairs():
-    try:
-        r    = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=15)
-        data = r.json()
-        return {s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"}
-    except Exception:
-        return set()
+def get_ohlcv(symbol):
+    for url, name in [
+        ("https://fapi.binance.com/fapi/v1/klines", "binance_futures"),
+        ("https://api.binance.com/api/v3/klines",   "binance_spot"),
+    ]:
+        try:
+            r    = requests.get(url, params={"symbol": f"{symbol}USDT", "interval": "1h", "limit": 100}, timeout=10)
+            data = r.json()
+            if not data or isinstance(data, dict):
+                continue
+            df = pd.DataFrame(data, columns=["time","open","high","low","close","volume","close_time","quote_vol","trades","taker_buy_base","taker_buy_quote","ignore"])
+            df["close"]  = df["close"].astype(float)
+            df["volume"] = df["volume"].astype(float)
+            if len(df) >= 30:
+                return df, name
+        except Exception:
+            continue
+    return None, None
 
-def get_daily_closes(symbol):
-    try:
-        r    = requests.get("https://api.binance.com/api/v3/klines", params={"symbol": f"{symbol}USDT", "interval": "1d", "limit": 50}, timeout=10)
-        data = r.json()
-        if not data or isinstance(data, dict):
-            return []
-        return [float(c[4]) for c in data]
-    except Exception:
-        return []
-
-def wait_until_daily_close():
-    now        = datetime.now(timezone.utc)
-    next_close = (now + timedelta(days=1)).replace(hour=0, minute=0, second=30, microsecond=0)
-    wait       = (next_close - now).total_seconds()
-    return wait
+def check_signal(df):
+    df = df.copy()
+    df["ema_fast"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
+    df["ema_slow"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
+    df["avg_vol"]  = df["volume"].rolling(20).mean()
+    prev      = df.iloc[-3]
+    curr      = df.iloc[-2]
+    bullish   = (prev["ema_fast"] <= prev["ema_slow"]) and (curr["ema_fast"] > curr["ema_slow"])
+    bearish   = (prev["ema_fast"] >= prev["ema_slow"]) and (curr["ema_fast"] < curr["ema_slow"])
+    vol_ok    = curr["volume"] >= VOLUME_MULTIPLIER * curr["avg_vol"]
+    vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
+    if bullish and vol_ok:
+        return "bullish", vol_ratio, curr["close"]
+    if bearish and vol_ok:
+        return "bearish", vol_ratio, curr["close"]
+    return None, vol_ratio, curr["close"]
 
 def run():
-    send_telegram("4️⃣ *Signal 4 Started*\nDaily EMA 12/21 Cross | MC > $500M | Fires at 00:00 UTC")
+    send_telegram("1️⃣ *Signal 1 Started*\nEMA 12/21 Cross + 1.2x Volume | MC > $1B | Every 15min")
     while True:
         try:
-            wait       = wait_until_daily_close()
-            close_time = (datetime.now(timezone.utc) + timedelta(seconds=wait)).strftime("%Y-%m-%d %H:%M UTC")
-            print(f"[Signal4] Next scan at {close_time}")
-            time.sleep(wait)
-
-            print(f"[Signal4] Running daily scan...")
-            coins         = get_coins()
-            binance_pairs = get_binance_pairs()
-            alerts_sent   = 0
-
+            print(f"\n[Signal1] Scanning...")
+            coins = get_coins()
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
-                    if f"{symbol}USDT" not in binance_pairs:
+                    df, market = get_ohlcv(symbol)
+                    if df is None:
                         continue
-                    closes = get_daily_closes(symbol)
-                    if len(closes) < 22:
-                        continue
-                    ema_fast  = pd.Series(closes).ewm(span=EMA_FAST, adjust=False).mean().tolist()
-                    ema_slow  = pd.Series(closes).ewm(span=EMA_SLOW, adjust=False).mean().tolist()
-                    bullish   = ema_fast[-2] < ema_slow[-2] and ema_fast[-1] > ema_slow[-1]
-                    bearish   = ema_fast[-2] > ema_slow[-2] and ema_fast[-1] < ema_slow[-1]
-                    if bullish:
+                    direction, vol_ratio, price = check_signal(df)
+                    if direction and not is_on_cooldown(symbol):
+                        emoji = "🚀" if direction == "bullish" else "🔻"
+                        text  = "EMA12 crossed ABOVE EMA21" if direction == "bullish" else "EMA12 crossed BELOW EMA21"
                         send_telegram(
-                            f"🟢 *DAILY EMA CROSS — BULLISH*\n"
+                            f"{emoji} *EMA CROSS SIGNAL*\n"
                             f"────────────────────\n"
                             f"📌 *{symbol}*\n"
-                            f"💰 Price      : `${closes[-1]:,.4f}`\n"
+                            f"💰 Price      : `${price:,.4f}`\n"
                             f"📊 Market Cap : `${coin['market_cap']/1e9:.2f}B`\n"
-                            f"📈 EMA12 crossed ABOVE EMA21\n"
-                            f"⏰ Time (UTC) : `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}` (Daily Close)"
+                            f"📈 {text}\n"
+                            f"🔊 Volume     : `{vol_ratio:.2f}x` average\n"
+                            f"⏰ Time (UTC) : `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
                         )
-                        alerts_sent += 1
+                        mark_alerted(symbol)
                         time.sleep(0.5)
-                    elif bearish:
-                        send_telegram(
-                            f"🔴 *DAILY EMA CROSS — BEARISH*\n"
-                            f"────────────────────\n"
-                            f"📌 *{symbol}*\n"
-                            f"💰 Price      : `${closes[-1]:,.4f}`\n"
-                            f"📊 Market Cap : `${coin['market_cap']/1e9:.2f}B`\n"
-                            f"📉 EMA12 crossed BELOW EMA21\n"
-                            f"⏰ Time (UTC) : `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}` (Daily Close)"
-                        )
-                        alerts_sent += 1
-                        time.sleep(0.5)
-                    time.sleep(0.2)
                 except Exception as e:
-                    print(f"[Signal4] {symbol} error: {e}")
-
-            send_telegram(f"✅ *Signal 4 Daily Scan Done*\nAlerts sent: `{alerts_sent}`")
-            print(f"[Signal4] Done. {alerts_sent} alerts sent.")
-
+                    print(f"[Signal1] {symbol} error: {e}")
+                time.sleep(0.15)
         except Exception as e:
-            print(f"[Signal4] Error: {e}")
-            send_telegram(f"⚠️ Signal 4 error: `{e}`")
-            time.sleep(60)
+            print(f"[Signal1] Scan error: {e}")
+        time.sleep(SCAN_INTERVAL)

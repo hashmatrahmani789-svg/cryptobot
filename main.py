@@ -16,6 +16,5 @@ if __name__ == "__main__":
     t3.start()
     t4.start()
 
-    # Keep main thread alive forever
     while True:
         time.sleep(60)
