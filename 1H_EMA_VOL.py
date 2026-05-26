@@ -17,8 +17,8 @@ VOL_SPIKE_15      = 1.8      # Type 2: 1.8x previous candle
 # 1H settings
 EMA_FAST_1H       = 12
 EMA_SLOW_1H       = 21
-VOL_MULTIPLIER_1H = 2.0      # 1H volume must be 2x average
-VOL_ROLLING_1H    = 20       # rolling window for 1H volume
+VOL_MULTIPLIER_1H = 1.5      # lowered from 2.0
+VOL_ROLLING_1H    = 20
 
 SCAN_INTERVAL     = 15 * 60
 COOLDOWN_SEC      = 3600
@@ -92,7 +92,6 @@ def get_ohlcv(symbol, interval, limit=100):
 
 # ─────────────────────────────────────────
 def check_15m(df):
-    """15m: EMA 9/21 cross + Type1 volume + Type2 volume spike"""
     df = df.copy()
     df["ema_fast"] = df["close"].ewm(span=EMA_FAST_15, adjust=False).mean()
     df["ema_slow"] = df["close"].ewm(span=EMA_SLOW_15, adjust=False).mean()
@@ -108,10 +107,11 @@ def check_15m(df):
     vol_type1 = curr["volume"] >= VOL_MULTIPLIER_15 * curr["avg_vol"]
 
     # Type 2 — spike vs previous candle
-    prev_vol   = df["volume"].iloc[-3]
-    vol_type2  = (curr["volume"] / prev_vol >= VOL_SPIKE_15) if prev_vol > 0 else False
+    prev_vol  = df["volume"].iloc[-3]
+    vol_type2 = (curr["volume"] / prev_vol >= VOL_SPIKE_15) if prev_vol > 0 else False
 
-    vol_ok    = vol_type1 and vol_type2
+    # OR instead of AND — either condition passes
+    vol_ok    = vol_type1 or vol_type2
     vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
 
     if bullish and vol_ok:
@@ -122,7 +122,6 @@ def check_15m(df):
 
 # ─────────────────────────────────────────
 def check_1h_confirmation(df_1h, direction):
-    """1H: EMA 12/21 trend + volume confirmation"""
     df = df_1h.copy()
     df["ema_fast"] = df["close"].ewm(span=EMA_FAST_1H, adjust=False).mean()
     df["ema_slow"] = df["close"].ewm(span=EMA_SLOW_1H, adjust=False).mean()
@@ -131,11 +130,11 @@ def check_1h_confirmation(df_1h, direction):
     curr = df.iloc[-2]
 
     # 1H EMA trend must match 15m signal direction
-    trend_ok = (curr["ema_fast"] > curr["ema_slow"]) if direction == "bullish" \
-               else (curr["ema_fast"] < curr["ema_slow"])
+    trend_ok     = (curr["ema_fast"] > curr["ema_slow"]) if direction == "bullish" \
+                   else (curr["ema_fast"] < curr["ema_slow"])
 
-    # 1H volume must be above average
-    vol_1h_ok  = curr["volume"] >= VOL_MULTIPLIER_1H * curr["avg_vol"]
+    # 1H volume — lowered to 1.5x
+    vol_1h_ok    = curr["volume"] >= VOL_MULTIPLIER_1H * curr["avg_vol"]
     vol_1h_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
 
     return trend_ok, vol_1h_ok, vol_1h_ratio
@@ -147,8 +146,8 @@ def run():
         "────────────────────\n"
         "⏱ *Entry* : 15m EMA 9/21 Cross\n"
         "✅ *Filter* : 1H EMA 12/21 Trend + Volume\n"
-        "🔊 *Volume*: Type1 (1.5x avg) + Type2 (1.8x prev candle) on 15m\n"
-        "📊 *1H Vol* : 2x rolling 20 average\n"
+        "🔊 *Volume*: Type1 (1.5x avg) OR Type2 (1.8x prev candle) on 15m\n"
+        "📊 *1H Vol* : 1.5x rolling 20 average\n"
         "💰 *MC Filter* : > $1B\n"
         "🔄 *Scan every* : 15 min"
     )
@@ -161,16 +160,14 @@ def run():
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
-                    # Fetch both timeframes
                     df_15m = get_ohlcv(symbol, "15m", limit=100)
                     if df_15m is None:
                         continue
 
-                    df_1h  = get_ohlcv(symbol, "1h", limit=100)
+                    df_1h = get_ohlcv(symbol, "1h", limit=100)
                     if df_1h is None:
                         continue
 
-                    # Step 1 — check 15m signal
                     direction, vol_ratio_15m, price = check_15m(df_15m)
                     if not direction:
                         continue
@@ -178,10 +175,8 @@ def run():
                     if is_on_cooldown(symbol):
                         continue
 
-                    # Step 2 — confirm on 1H
                     trend_ok, vol_1h_ok, vol_1h_ratio = check_1h_confirmation(df_1h, direction)
 
-                    # Log what we found
                     print(f"[1H_EMA_VOL] {symbol} | 15m={direction} vol={vol_ratio_15m:.2f}x | 1H trend={trend_ok} vol={vol_1h_ok} ({vol_1h_ratio:.2f}x)")
 
                     if not trend_ok:
@@ -192,7 +187,6 @@ def run():
                         print(f"[1H_EMA_VOL] {symbol} SKIPPED — 1H volume not confirmed")
                         continue
 
-                    # ✅ Both confirmed — send alert
                     emoji     = "🚀" if direction == "bullish" else "🔻"
                     cross_txt = "EMA9 crossed ABOVE EMA21 (15m)" if direction == "bullish" \
                                 else "EMA9 crossed BELOW EMA21 (15m)"
