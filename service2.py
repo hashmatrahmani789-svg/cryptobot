@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 BOT_TOKEN      = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID        = "8118939134"
@@ -11,8 +11,8 @@ MARKET_CAP_MIN = 1_000_000_000
 SCAN_INTERVAL  = 4 * 60 * 60   # 4 hours
 
 # Cooldowns
-CD_4H          = 14400          # 4 hours
-CD_DAILY       = 86400          # 24 hours
+CD_4H          = 14400
+CD_DAILY       = 86400
 
 # EMA settings
 EMA_FAST       = 12
@@ -20,11 +20,7 @@ EMA_SLOW       = 21
 EMA_TREND      = 50
 
 # Daily summary counters
-daily_counts = {
-    "4h_cross":    0,
-    "4h_ema50":    0,
-    "daily_cross": 0,
-}
+daily_counts = {"4h_cross": 0, "4h_ema50": 0, "daily_cross": 0}
 last_summary = time.time()
 
 # ─────────────────────────────────────────
@@ -73,7 +69,7 @@ def get_coins():
             for coin in data:
                 mc = coin.get("market_cap") or 0
                 if mc < MARKET_CAP_MIN:
-                    return coins
+                    continue
                 coins.append({"symbol": coin["symbol"].upper(), "market_cap": mc})
             if (data[-1].get("market_cap") or 0) < MARKET_CAP_MIN:
                 break
@@ -153,7 +149,7 @@ def check_4h_cross(symbol, coin, df):
     print(f"[S2] 4H CROSS {'BULL' if bullish else 'BEAR'} — {symbol}")
 
 # ─────────────────────────────────────────
-# SIGNAL 2 — 4H EMA 50 Wick + Close Reject
+# SIGNAL 2 — 4H EMA50 Wick + Close Reject
 # ─────────────────────────────────────────
 def check_4h_ema50(symbol, coin, df):
     if on_cooldown(symbol, cd["4h_ema50"], CD_4H):
@@ -170,14 +166,12 @@ def check_4h_ema50(symbol, coin, df):
     alert_type = None
     direction  = None
 
-    # Wick reject
     if c0["low"] < ema0 and c0["close"] > ema0:
         alert_type = "Wick Reject"
         direction  = "bullish"
     elif c0["high"] > ema0 and c0["close"] < ema0:
         alert_type = "Wick Reject"
         direction  = "bearish"
-    # Close reject
     elif c1["close"] < ema1 and c0["close"] > ema0:
         alert_type = "Close Reject"
         direction  = "bullish"
@@ -308,8 +302,8 @@ def run():
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
-                    df_4h    = get_ohlcv(symbol, "4h",  limit=100)
-                    df_daily = get_ohlcv(symbol, "1d",  limit=100)
+                    df_4h    = get_ohlcv(symbol, "4h", limit=100)
+                    df_daily = get_ohlcv(symbol, "1d", limit=100)
 
                     if df_4h is not None:
                         check_4h_cross(symbol, coin, df_4h)
@@ -325,7 +319,6 @@ def run():
 
             print(f"[Service2] Scan complete.")
 
-            # Send daily summary every 24H
             if time.time() - last_summary >= 86400:
                 send_daily_summary(coins_scanned)
                 coins_scanned = 0
