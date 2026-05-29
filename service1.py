@@ -22,7 +22,7 @@ EMA_TREND      = 50
 
 # Volume settings
 VOL_ROLLING    = 20
-VOL_MIN_RATIO  = 1.5        # 1.5x average volume required
+VOL_MIN_RATIO  = 1.5
 
 # OI settings
 OI_SPIKE_PCT   = 2.0
@@ -35,25 +35,25 @@ CVD_LOOKBACK   = 20
 CVD_MIN_RATIO  = 0.25
 
 # Funding settings
-FUNDING_EXTREME = 0.05      # 0.05% per 8h = extreme
+FUNDING_EXTREME = 0.05
 
 # Long/Short settings
-LS_EXTREME     = 0.70       # 70% one side = extreme
+LS_EXTREME     = 0.70
 
 # ─────────────────────────────────────────
-# Cooldown stores — one per signal type
+# Cooldown stores
 # ─────────────────────────────────────────
 cd = {
-    "ema_cross_1h":    {},
-    "ema50_1h":        {},
-    "ema50_15m":       {},
-    "oi_spike":        {},
-    "oi_accel":        {},
-    "cvd":             {},
-    "vol_1h":          {},
-    "vol_15m":         {},
-    "funding":         {},
-    "longshort":       {},
+    "ema_cross_1h": {},
+    "ema50_1h":     {},
+    "ema50_15m":    {},
+    "oi_spike":     {},
+    "oi_accel":     {},
+    "cvd":          {},
+    "vol_1h":       {},
+    "vol_15m":      {},
+    "funding":      {},
+    "longshort":    {},
 }
 
 # ─────────────────────────────────────────
@@ -93,7 +93,7 @@ def get_coins():
             for coin in data:
                 mc = coin.get("market_cap") or 0
                 if mc < MARKET_CAP_MIN:
-                    return coins
+                    continue
                 coins.append({"symbol": coin["symbol"].upper(), "market_cap": mc})
             if (data[-1].get("market_cap") or 0) < MARKET_CAP_MIN:
                 break
@@ -175,6 +175,16 @@ def get_longshort(symbol):
     except Exception:
         return None, None
 
+def get_price(symbol):
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/fapi/v1/ticker/price",
+            params={"symbol": f"{symbol}USDT"}, timeout=10
+        )
+        return float(r.json()["price"])
+    except Exception:
+        return None
+
 # ─────────────────────────────────────────
 # SIGNAL 1 — EMA 12/21 Cross 1H + Volume
 # ─────────────────────────────────────────
@@ -182,9 +192,9 @@ def check_ema_cross_1h(symbol, coin, df):
     if on_cooldown(symbol, cd["ema_cross_1h"], CD_1H):
         return
 
-    df         = df.copy()
-    df["ema12"] = df["close"].ewm(span=EMA_FAST,  adjust=False).mean()
-    df["ema21"] = df["close"].ewm(span=EMA_SLOW,  adjust=False).mean()
+    df          = df.copy()
+    df["ema12"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
+    df["ema21"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
     df["avg_vol"] = df["volume"].rolling(VOL_ROLLING).mean()
 
     prev = df.iloc[-3]
@@ -200,7 +210,7 @@ def check_ema_cross_1h(symbol, coin, df):
     vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
 
     if not vol_ok:
-        print(f"[S1] EMA CROSS 1H {symbol} — skipped low volume ({vol_ratio:.2f}x)")
+        print(f"[S1] EMA CROSS 1H {symbol} skipped — low vol {vol_ratio:.2f}x")
         return
 
     price = curr["close"]
@@ -235,9 +245,8 @@ def check_ema50_reject_1h(symbol, coin, df):
     df["ema50"] = df["close"].ewm(span=EMA_TREND, adjust=False).mean()
     df["avg_vol"] = df["volume"].rolling(VOL_ROLLING).mean()
 
-    c1 = df.iloc[-3]
-    c0 = df.iloc[-2]
-
+    c1   = df.iloc[-3]
+    c0   = df.iloc[-2]
     ema1 = c1["ema50"]
     ema0 = c0["ema50"]
 
@@ -250,14 +259,12 @@ def check_ema50_reject_1h(symbol, coin, df):
     alert_type = None
     direction  = None
 
-    # Wick reject
     if c0["low"] < ema0 and c0["close"] > ema0:
         alert_type = "Wick Reject"
         direction  = "bullish"
     elif c0["high"] > ema0 and c0["close"] < ema0:
         alert_type = "Wick Reject"
         direction  = "bearish"
-    # Close reject
     elif c1["close"] < ema1 and c0["close"] > ema0:
         alert_type = "Close Reject"
         direction  = "bullish"
@@ -306,9 +313,8 @@ def check_ema50_reject_15m(symbol, coin, df):
     df["ema50"] = df["close"].ewm(span=EMA_TREND, adjust=False).mean()
     df["avg_vol"] = df["volume"].rolling(VOL_ROLLING).mean()
 
-    c1 = df.iloc[-3]
-    c0 = df.iloc[-2]
-
+    c1   = df.iloc[-3]
+    c0   = df.iloc[-2]
     ema1 = c1["ema50"]
     ema0 = c0["ema50"]
 
@@ -372,18 +378,13 @@ def check_oi(symbol, coin):
     if not oi_list or len(oi_list) < 4:
         return
 
-    try:
-        price = float(requests.get(
-            "https://fapi.binance.com/fapi/v1/ticker/price",
-            params={"symbol": f"{symbol}USDT"}, timeout=10
-        ).json()["price"])
-    except Exception:
+    price = get_price(symbol)
+    if price is None:
         return
 
-    # OI Spike
     if not on_cooldown(symbol, cd["oi_spike"], CD_1H):
-        prev       = oi_list[-2]
-        curr       = oi_list[-1]
+        prev   = oi_list[-2]
+        curr   = oi_list[-1]
         if prev > 0:
             change = (curr - prev) / prev * 100
             if abs(change) >= OI_SPIKE_PCT:
@@ -404,7 +405,6 @@ def check_oi(symbol, coin):
                 mark(symbol, cd["oi_spike"])
                 print(f"[S1] OI SPIKE {'BULL' if direction == 'bullish' else 'BEAR'} — {symbol} {change:+.2f}%")
 
-    # OI Acceleration
     if not on_cooldown(symbol, cd["oi_accel"], CD_1H):
         changes = []
         for i in range(1, len(oi_list)):
@@ -510,13 +510,12 @@ def check_cvd(symbol, coin, df):
 # SIGNAL 6 — Volume Spike 1H + 15m
 # ─────────────────────────────────────────
 def check_volume(symbol, coin, df_1h, df_15m):
-    # 1H Volume
     if not on_cooldown(symbol, cd["vol_1h"], CD_1H):
-        df          = df_1h.copy()
-        df["avg"]   = df["volume"].rolling(VOL_ROLLING).mean()
-        curr        = df.iloc[-2]
-        vol_ratio   = curr["volume"] / curr["avg"] if curr["avg"] else 0
-        if vol_ratio >= VOL_MIN_RATIO * 1.5:   # 2.25x for standalone vol alert
+        df        = df_1h.copy()
+        df["avg"] = df["volume"].rolling(VOL_ROLLING).mean()
+        curr      = df.iloc[-2]
+        vol_ratio = curr["volume"] / curr["avg"] if curr["avg"] else 0
+        if vol_ratio >= VOL_MIN_RATIO * 1.5:
             price = curr["close"]
             send_telegram(
                 f"🔊 *VOLUME SPIKE 1H*\n"
@@ -525,19 +524,18 @@ def check_volume(symbol, coin, df_1h, df_15m):
                 f"💰 Price      : `${price:,.4f}`\n"
                 f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
                 f"────────────────────\n"
-                f"📊 Volume     : `{vol_ratio:.2f}x` avg (1H)\n"
+                f"📊 Volume     : `{vol_ratio:.2f}x` avg\n"
                 f"💡 Unusual volume — watch for breakout\n"
                 f"⏰ `{now_utc()} UTC`"
             )
             mark(symbol, cd["vol_1h"])
             print(f"[S1] VOL SPIKE 1H — {symbol} {vol_ratio:.2f}x")
 
-    # 15m Volume
     if not on_cooldown(symbol, cd["vol_15m"], CD_15M):
-        df          = df_15m.copy()
-        df["avg"]   = df["volume"].rolling(VOL_ROLLING).mean()
-        curr        = df.iloc[-2]
-        vol_ratio   = curr["volume"] / curr["avg"] if curr["avg"] else 0
+        df        = df_15m.copy()
+        df["avg"] = df["volume"].rolling(VOL_ROLLING).mean()
+        curr      = df.iloc[-2]
+        vol_ratio = curr["volume"] / curr["avg"] if curr["avg"] else 0
         if vol_ratio >= VOL_MIN_RATIO * 1.5:
             price = curr["close"]
             send_telegram(
@@ -547,7 +545,7 @@ def check_volume(symbol, coin, df_1h, df_15m):
                 f"💰 Price      : `${price:,.4f}`\n"
                 f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
                 f"────────────────────\n"
-                f"📊 Volume     : `{vol_ratio:.2f}x` avg (15m)\n"
+                f"📊 Volume     : `{vol_ratio:.2f}x` avg\n"
                 f"💡 Unusual volume — scalp opportunity\n"
                 f"⏰ `{now_utc()} UTC`"
             )
@@ -562,31 +560,24 @@ def check_funding(symbol, coin):
         return
 
     funding = get_funding(symbol)
-    if funding is None:
+    if funding is None or abs(funding) < FUNDING_EXTREME:
         return
 
-    if abs(funding) < FUNDING_EXTREME:
-        return
-
-    try:
-        price = float(requests.get(
-            "https://fapi.binance.com/fapi/v1/ticker/price",
-            params={"symbol": f"{symbol}USDT"}, timeout=10
-        ).json()["price"])
-    except Exception:
+    price = get_price(symbol)
+    if price is None:
         return
 
     if funding > 0:
-        emoji   = "⚠️"
-        meaning = "Funding very HIGH — longs overloaded\nShort squeeze unlikely — long squeeze risk 🔴"
+        emoji     = "⚠️"
+        meaning   = "Funding very HIGH — longs overloaded\nLong squeeze risk 🔴"
         direction = "bearish"
     else:
-        emoji   = "💡"
-        meaning = "Funding very NEGATIVE — shorts overloaded\nShort squeeze likely incoming 🟢"
+        emoji     = "💡"
+        meaning   = "Funding very NEGATIVE — shorts overloaded\nShort squeeze likely 🟢"
         direction = "bullish"
 
     send_telegram(
-        f"{emoji} *FUNDING RATE EXTREME — {'BULLISH' if direction == 'bullish' else 'BEARISH'}*\n"
+        f"{emoji} *FUNDING EXTREME — {'BULLISH' if direction == 'bullish' else 'BEARISH'}*\n"
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
@@ -610,17 +601,13 @@ def check_longshort(symbol, coin):
     if long_pct is None:
         return
 
-    try:
-        price = float(requests.get(
-            "https://fapi.binance.com/fapi/v1/ticker/price",
-            params={"symbol": f"{symbol}USDT"}, timeout=10
-        ).json()["price"])
-    except Exception:
+    price = get_price(symbol)
+    if price is None:
         return
 
     if long_pct >= LS_EXTREME:
         send_telegram(
-            f"🐂 *LONG/SHORT EXTREME — CROWDED LONGS*\n"
+            f"🐂 *CROWDED LONGS — SQUEEZE RISK*\n"
             f"────────────────────\n"
             f"📌 *{symbol}*\n"
             f"💰 Price      : `${price:,.4f}`\n"
@@ -632,11 +619,11 @@ def check_longshort(symbol, coin):
             f"⏰ `{now_utc()} UTC`"
         )
         mark(symbol, cd["longshort"])
-        print(f"[S1] L/S EXTREME LONGS — {symbol} {long_pct*100:.1f}%")
+        print(f"[S1] CROWDED LONGS — {symbol} {long_pct*100:.1f}%")
 
     elif short_pct >= LS_EXTREME:
         send_telegram(
-            f"🐻 *LONG/SHORT EXTREME — CROWDED SHORTS*\n"
+            f"🐻 *CROWDED SHORTS — SQUEEZE INCOMING*\n"
             f"────────────────────\n"
             f"📌 *{symbol}*\n"
             f"💰 Price      : `${price:,.4f}`\n"
@@ -648,7 +635,7 @@ def check_longshort(symbol, coin):
             f"⏰ `{now_utc()} UTC`"
         )
         mark(symbol, cd["longshort"])
-        print(f"[S1] L/S EXTREME SHORTS — {symbol} {short_pct*100:.1f}%")
+        print(f"[S1] CROWDED SHORTS — {symbol} {short_pct*100:.1f}%")
 
 # ─────────────────────────────────────────
 # MAIN SCAN LOOP
@@ -659,8 +646,8 @@ def run():
         "────────────────────\n"
         "📊 *Signals:*\n"
         "1. 1H EMA 12/21 Cross + Volume\n"
-        "2. 1H EMA 50 Wick/Close Reject + Volume\n"
-        "3. 15m EMA 50 Wick/Close Reject + Volume\n"
+        "2. 1H EMA50 Wick/Close Reject + Volume\n"
+        "3. 15m EMA50 Wick/Close Reject + Volume\n"
         "4. 1H OI Spike + Acceleration\n"
         "5. 1H CVD Divergence\n"
         "6. 1H + 15m Volume Spike\n"
