@@ -1,1 +1,1 @@
-worker: python daily_ema.py
+worker: python daily_ema.py & python intraday_ema.py & wait
