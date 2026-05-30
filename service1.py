@@ -19,18 +19,17 @@ EMA_SLOW        = 21
 EMA_TREND       = 50
 
 VOL_ROLLING     = 20
-VOL_MIN_RATIO   = 1.2
 
-OI_SPIKE_PCT    = 1.5
-OI_ACCEL_MIN    = 1.0
-OI_ACCEL_STEP   = 0.3
+OI_SPIKE_PCT    = 1.0
+OI_ACCEL_MIN    = 0.5
+OI_ACCEL_STEP   = 0.1
 OI_PERIODS      = 3
 
 CVD_LOOKBACK    = 20
-CVD_MIN_RATIO   = 0.25
+CVD_MIN_RATIO   = 0.10
 
-FUNDING_EXTREME = 0.03
-LS_EXTREME      = 0.65
+FUNDING_EXTREME = 0.01
+LS_EXTREME      = 0.60
 
 cd = {
     "ema_cross_1h": {},
@@ -163,8 +162,7 @@ def get_oi_coinalyze(symbol, periods=6):
         if len(history) < 4:
             return None
         return [float(h["o"]) for h in history]
-    except Exception as e:
-        print(f"[S1] Coinalyze OI error {symbol}: {e}")
+    except Exception:
         return None
 
 def get_funding_coinalyze(symbol):
@@ -184,8 +182,7 @@ def get_funding_coinalyze(symbol):
         if val is None:
             return None
         return float(val)
-    except Exception as e:
-        print(f"[S1] Coinalyze Funding error {symbol}: {e}")
+    except Exception:
         return None
 
 def get_longshort_coinalyze(symbol):
@@ -209,8 +206,7 @@ def get_longshort_coinalyze(symbol):
         long_pct  = float(history[-1].get("l", 0))
         short_pct = float(history[-1].get("s", 0))
         return long_pct, short_pct
-    except Exception as e:
-        print(f"[S1] Coinalyze L/S error {symbol}: {e}")
+    except Exception:
         return None, None
 
 # ─── SIGNAL CHECKS ────────────────────────────────────────────────
@@ -219,19 +215,17 @@ def check_ema_cross_1h(symbol, coin, df):
     if on_cooldown(symbol, cd["ema_cross_1h"], CD_1H):
         return
     df = df.copy()
-    df["ema12"]   = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
-    df["ema21"]   = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
-    df["avg_vol"] = df["volume"].rolling(VOL_ROLLING).mean()
+    df["ema12"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
+    df["ema21"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
     prev = df.iloc[-3]
     curr = df.iloc[-2]
     bullish = prev["ema12"] <= prev["ema21"] and curr["ema12"] > curr["ema21"]
     bearish = prev["ema12"] >= prev["ema21"] and curr["ema12"] < curr["ema21"]
     if not bullish and not bearish:
         return
-    vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
-    if vol_ratio < VOL_MIN_RATIO:
-        return
-    price = curr["close"]
+    price     = curr["close"]
+    vol_avg   = df["volume"].rolling(VOL_ROLLING).mean().iloc[-2]
+    vol_ratio = curr["volume"] / vol_avg if vol_avg else 0
     emoji = "🟢" if bullish else "🔴"
     txt   = "EMA12 crossed ABOVE EMA21" if bullish else "EMA12 crossed BELOW EMA21"
     bias  = "Bullish momentum" if bullish else "Bearish momentum"
@@ -256,15 +250,11 @@ def check_ema50_reject(symbol, coin, df, tf):
     if on_cooldown(symbol, cd[store_key], cooldown):
         return
     df = df.copy()
-    df["ema50"]   = df["close"].ewm(span=EMA_TREND, adjust=False).mean()
-    df["avg_vol"] = df["volume"].rolling(VOL_ROLLING).mean()
-    c1    = df.iloc[-3]
-    c0    = df.iloc[-2]
-    ema1  = c1["ema50"]
-    ema0  = c0["ema50"]
-    vol_ratio = c0["volume"] / c0["avg_vol"] if c0["avg_vol"] else 0
-    if vol_ratio < VOL_MIN_RATIO:
-        return
+    df["ema50"] = df["close"].ewm(span=EMA_TREND, adjust=False).mean()
+    c1   = df.iloc[-3]
+    c0   = df.iloc[-2]
+    ema1 = c1["ema50"]
+    ema0 = c0["ema50"]
     alert_type = None
     direction  = None
     if c0["low"] < ema0 and c0["close"] > ema0:
@@ -295,7 +285,6 @@ def check_ema50_reject(symbol, coin, df, tf):
         f"────────────────────\n"
         f"⚡ {what}\n"
         f"📊 EMA50      : `{ema0:,.4f}`\n"
-        f"🔊 Volume     : `{vol_ratio:.2f}x` avg\n"
         f"💡 {meaning}\n"
         f"⏰ `{now_utc()} UTC`"
     )
@@ -421,7 +410,7 @@ def check_volume(symbol, coin, df_1h, df_15m):
         d["avg"]  = d["volume"].rolling(VOL_ROLLING).mean()
         curr      = d.iloc[-2]
         vol_ratio = curr["volume"] / curr["avg"] if curr["avg"] else 0
-        if vol_ratio >= VOL_MIN_RATIO * 1.5:
+        if vol_ratio >= 1.3:
             price = curr["close"]
             send_telegram(
                 f"🔊 *VOLUME SPIKE {label}*\n"
@@ -510,12 +499,12 @@ def run():
     send_telegram(
         "1️⃣ *Service 1 Started* ✅\n"
         "────────────────────\n"
-        "1. 1H EMA 12/21 Cross + Volume\n"
-        "2. 1H EMA50 Wick/Close Reject + Volume\n"
-        "3. 15m EMA50 Wick/Close Reject + Volume\n"
+        "1. 1H EMA 12/21 Cross (no vol filter)\n"
+        "2. 1H EMA50 Wick/Close Reject\n"
+        "3. 15m EMA50 Wick/Close Reject\n"
         "4. 1H OI Spike + Acceleration (Coinalyze)\n"
         "5. 1H CVD Divergence\n"
-        "6. 1H + 15m Volume Spike\n"
+        "6. 1H + 15m Volume Spike 1.3x\n"
         "7. Funding Rate Extreme (Coinalyze)\n"
         "8. Long/Short Ratio Extreme (Coinalyze)\n"
         "────────────────────\n"
