@@ -14,11 +14,6 @@ EMA_FAST       = 12
 EMA_SLOW       = 21
 EMA_TREND      = 50
 
-STABLECOINS = {
-    "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
-    "PYUSD","FRAX","LUSD","GUSD","USDJ","HUSD","SUSD","UST"
-}
-
 daily_counts = {"4h_cross": 0, "4h_ema50": 0, "daily_cross": 0}
 last_summary  = time.time()
 
@@ -27,6 +22,57 @@ cd = {
     "4h_ema50":    {},
     "daily_cross": {},
 }
+
+def get_coins():
+    coins = [
+        # Mega caps
+        "BTC","ETH","BNB","SOL","XRP","DOGE","ADA","AVAX","TRX","DOT",
+        # Large caps
+        "LINK","SHIB","LTC","BCH","UNI","NEAR","APT","ICP","TAO","HYPE",
+        "SUI","FIL","ARB","OP","STX","IMX","INJ","MKR","FET","RNDR",
+        "ATOM","AAVE","TIA","WIF","PEPE","BONK","FLOKI","JUP","SEI","WLD",
+        "GRT","SNX","LDO","CAKE","DYDX","GMX","PENDLE","CRV","VET","HBAR",
+        # Mid caps
+        "ALGO","EGLD","SAND","MANA","AXS","CHZ","GALA","ENJ","FLOW","ROSE",
+        "FTM","KAVA","THETA","OCEAN","CFX","BLUR","ZEC","KSM","MINA","QTUM",
+        "1INCH","SUSHI","COMP","BAL","YFI","ZRX","BAND","STORJ","SKL","NMR",
+        "JASMY","ACH","ZEN","ONT","ZIL","ICX","WAVES","XTZ","EOS","TRB",
+        "API3","UMA","BAT","LRC","ANKR","CELR","COTI","CTSI","OGN","REN",
+        # New trending
+        "POL","PYTH","JTO","MANTA","ALT","PIXEL","PORTAL","STRK","DYM",
+        "METIS","BOME","WEN","TNSR","SAGA","REZ","BB","NOT","IO","ZK",
+        "LISTA","ZRO","BLAST","DOGS","HMSTR","CATI","EIGEN","SCR","NEIRO",
+        "GOAT","MOODENG","PNUT","ACT","MOVE","ME","PENGU","USUAL","TRUMP",
+        "MELANIA","BERA","IP","KAITO","RED","LAYER","PARTI","NIL","INIT",
+        "HUMA","TST","VINE","SIGN","SHELL","ANIME","COOKIE","DEXE",
+        # DeFi
+        "RPL","FXS","RDNT","LQTY","CRO","ALPHA","PERP","RUNE","SPELL",
+        "REEF","LOOKS","CVX","BADGER","TOKE",
+        # Layer 1 / Layer 2
+        "ONE","IOTA","KLAY","CELO","KDA","SCRT","GLMR","MOVR","ASTR",
+        "TLOS","EVMOS","TFUEL","SDN",
+        # Gaming / Metaverse
+        "ILV","MAGIC","ALICE","TLM","SUPER","PYR","GHST","RFOX","SKILL",
+        # AI
+        "AGIX","NMR","RLC","MASA",
+        # Memes
+        "TURBO","BRETT","BABYDOGE",
+        # Exchange tokens
+        "OKB","HT","KCS","GT","MX","LEO",
+        # Others
+        "XLM","XMR","ETC","DASH","BTG","DCR","DGB","SC","LSK","ARDR",
+        "STEEM","XEM","GRS","SNT","CVC","REQ","KNC","BNT","ANT","MTL",
+        "POE","BTT","WIN","NFT","BTTC","SUN","JST","ARPA","CTXC","FOR",
+        "LOOM","COS","PERL","DREP","TROY","VITE","TCT","IRIS",
+    ]
+    seen  = set()
+    final = []
+    for s in coins:
+        if s not in seen:
+            seen.add(s)
+            final.append({"symbol": s, "market_cap": 0})
+    print(f"[S2] {len(final)} coins loaded")
+    return final
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -43,27 +89,6 @@ def mark(symbol, store):
 
 def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-
-def get_coins():
-    try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/exchangeInfo",
-            timeout=15
-        )
-        data = r.json()
-        coins = []
-        seen  = set()
-        for s in data.get("symbols", []):
-            if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
-                sym = s.get("baseAsset", "").upper()
-                if sym and sym not in STABLECOINS and sym not in seen:
-                    seen.add(sym)
-                    coins.append({"symbol": sym, "market_cap": 0})
-        print(f"[S2] {len(coins)} coins from Binance spot")
-        return coins
-    except Exception as e:
-        print(f"[S2] Binance error: {e}")
-        return []
 
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
@@ -227,7 +252,7 @@ def run():
         "2. 4H EMA50 Wick + Close Reject\n"
         "3. Daily EMA 12/21 Cross\n"
         "────────────────────\n"
-        "📊 All Binance USDT pairs | Scan every 4H"
+        f"📊 {len(get_coins())} coins | Scan every 4H"
     )
     while True:
         try:

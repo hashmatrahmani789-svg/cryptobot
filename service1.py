@@ -43,10 +43,62 @@ cd = {
     "longshort":    {},
 }
 
-STABLECOINS = {
-    "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
-    "PYUSD","FRAX","LUSD","GUSD","USDJ","HUSD","SUSD","UST"
-}
+def get_coins():
+    coins = [
+        # Mega caps
+        "BTC","ETH","BNB","SOL","XRP","DOGE","ADA","AVAX","TRX","DOT",
+        # Large caps
+        "LINK","SHIB","LTC","BCH","UNI","NEAR","APT","ICP","TAO","HYPE",
+        "SUI","FIL","ARB","OP","STX","IMX","INJ","MKR","FET","RNDR",
+        "ATOM","AAVE","TIA","WIF","PEPE","BONK","FLOKI","JUP","SEI","WLD",
+        "GRT","SNX","LDO","CAKE","DYDX","GMX","PENDLE","CRV","VET","HBAR",
+        # Mid caps
+        "ALGO","EGLD","SAND","MANA","AXS","CHZ","GALA","ENJ","FLOW","ROSE",
+        "FTM","KAVA","THETA","OCEAN","CFX","BLUR","ZEC","KSM","MINA","QTUM",
+        "1INCH","SUSHI","COMP","BAL","YFI","ZRX","BAND","STORJ","SKL","NMR",
+        "JASMY","ACH","ZEN","ONT","ZIL","ICX","WAVES","XTZ","EOS","TRB",
+        "API3","UMA","BAT","LRC","ANKR","CELR","COTI","CTSI","OGN","REN",
+        # New trending
+        "POL","PYTH","JTO","MANTA","ALT","PIXEL","PORTAL","STRK","DYM",
+        "METIS","BOME","WEN","TNSR","SAGA","REZ","BB","NOT","IO","ZK",
+        "LISTA","ZRO","BLAST","DOGS","HMSTR","CATI","EIGEN","SCR","NEIRO",
+        "GOAT","MOODENG","PNUT","ACT","MOVE","ME","PENGU","USUAL","TRUMP",
+        "MELANIA","BERA","IP","KAITO","RED","LAYER","PARTI","NIL","INIT",
+        "HUMA","TST","B3X","VINE","SIGN","SHELL","ANIME","COOKIE","DEXE",
+        # DeFi
+        "RPL","FXS","RDNT","LQTY","CRO","BADGER","ALPHA","PERP","RUNE",
+        "SPELL","TRIBE","FXS","CVX","TOKE","BTRFLY","LOOKS","SHFT","REEF",
+        # Layer 1 / Layer 2
+        "NEAR","ONE","IOTA","HBAR","EGLD","KLAY","CELO","SGB","XDC","CSPR",
+        "KDA","SCRT","ROSE","GLMR","MOVR","ASTR","SDN","TLOS","EVMOS","TFUEL",
+        # Gaming / Metaverse
+        "AXS","SAND","MANA","ENJ","GALA","ILV","MAGIC","GMX","HOOK","ALICE",
+        "TLM","SUPER","HERO","PYR","GHST","REVV","RFOX","SKILL","TOWER","MOOV",
+        # AI coins
+        "FET","OCEAN","AGIX","NMR","RLC","CTX","RNDR","TAO","WLD","MASA",
+        # Memes
+        "DOGE","SHIB","PEPE","FLOKI","BONK","WIF","BOME","NEIRO","MOODENG",
+        "PNUT","GOAT","ACT","DOGS","HMSTR","CATI","TURBO","BRETT","BABYDOGE",
+        # Exchange tokens
+        "BNB","OKB","HT","KCS","GT","MX","CRO","LEO",
+        # Others
+        "XLM","XMR","ETC","DASH","ZEC","BTG","DCR","DGB","SC","LSK",
+        "ARDR","STEEM","XEM","NXT","BURST","VTC","XVG","RDD","MONA","GRS",
+        "STORJ","SNT","CVC","REQ","KNC","BNT","LRC","ZRX","BAT","ANT",
+        "MTL","MITH","VIBE","TNT","FUEL","WTC","AMB","BCPT","CMT","EVX",
+        "QSP","APPC","RCN","CDT","YOYO","SNGLS","ADX","MDA","AST","CHAT",
+        "POE","BCD","BTT","WIN","NFT","BTTC","SUN","JST","REEF","ARPA",
+        "CTXC","FOR","LOOM","COS","PERL","DREP","TROY","VITE","TCT","IRIS",
+    ]
+    # deduplicate
+    seen  = set()
+    final = []
+    for s in coins:
+        if s not in seen:
+            seen.add(s)
+            final.append({"symbol": s, "market_cap": 0})
+    print(f"[S1] {len(final)} coins loaded")
+    return final
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -63,27 +115,6 @@ def mark(symbol, store):
 
 def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-
-def get_coins():
-    try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/exchangeInfo",
-            timeout=15
-        )
-        data = r.json()
-        coins = []
-        seen  = set()
-        for s in data.get("symbols", []):
-            if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
-                sym = s.get("baseAsset", "").upper()
-                if sym and sym not in STABLECOINS and sym not in seen:
-                    seen.add(sym)
-                    coins.append({"symbol": sym, "market_cap": 0})
-        print(f"[S1] {len(coins)} coins from Binance spot")
-        return coins
-    except Exception as e:
-        print(f"[S1] Binance error: {e}")
-        return []
 
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
@@ -485,7 +516,7 @@ def run():
         "7. Funding Rate Extreme (Coinalyze)\n"
         "8. Long/Short Ratio Extreme (Coinalyze)\n"
         "────────────────────\n"
-        "📊 All Binance USDT pairs | Scan every 15 min"
+        f"📊 {len(get_coins())} coins | Scan every 15 min"
     )
     while True:
         try:
