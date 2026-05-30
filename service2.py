@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 BOT_TOKEN      = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID        = "8118939134"
 
-MARKET_CAP_MIN = 1_000_000_000
+MARKET_CAP_MIN = 500_000_000
+
 SCAN_INTERVAL  = 4 * 60 * 60
 
 CD_4H          = 14400
