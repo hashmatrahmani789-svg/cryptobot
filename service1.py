@@ -3,34 +3,34 @@ import pandas as pd
 import time
 from datetime import datetime, timezone
 
-BOT_TOKEN      = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
-CHAT_ID        = "8118939134"
+BOT_TOKEN       = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
+CHAT_ID         = "8118939134"
+COINALYZE_KEY   = "71b88a8f-d87d-4be6-bebe-8bc2c3053073"
 
-MARKET_CAP_MIN = 1_000_000_000
+MARKET_CAP_MIN  = 1_000_000_000
+SCAN_INTERVAL   = 15 * 60
 
-SCAN_INTERVAL  = 15 * 60
+CD_1H           = 3600
+CD_15M          = 900
+CD_4H           = 14400
 
-CD_1H          = 3600
-CD_15M         = 900
-CD_4H          = 14400
+EMA_FAST        = 12
+EMA_SLOW        = 21
+EMA_TREND       = 50
 
-EMA_FAST       = 12
-EMA_SLOW       = 21
-EMA_TREND      = 50
+VOL_ROLLING     = 20
+VOL_MIN_RATIO   = 1.5
 
-VOL_ROLLING    = 20
-VOL_MIN_RATIO  = 1.5
+OI_SPIKE_PCT    = 2.0
+OI_ACCEL_MIN    = 1.0
+OI_ACCEL_STEP   = 0.3
+OI_PERIODS      = 3
 
-OI_SPIKE_PCT   = 2.0
-OI_ACCEL_MIN   = 1.0
-OI_ACCEL_STEP  = 0.3
-OI_PERIODS     = 3
-
-CVD_LOOKBACK   = 20
-CVD_MIN_RATIO  = 0.25
+CVD_LOOKBACK    = 20
+CVD_MIN_RATIO   = 0.25
 
 FUNDING_EXTREME = 0.05
-LS_EXTREME     = 0.70
+LS_EXTREME      = 0.70
 
 cd = {
     "ema_cross_1h": {},
@@ -102,7 +102,7 @@ def get_futures_symbols():
         for s in data["symbols"]:
             if s["contractType"] == "PERPETUAL" and s["quoteAsset"] == "USDT":
                 symbols.add(s["baseAsset"].upper())
-        print(f"[Service1] {len(symbols)} futures symbols available on Binance")
+        print(f"[Service1] {len(symbols)} futures symbols on Binance")
         return symbols
     except Exception as e:
         print(f"[Service1] futures symbols error: {e}")
@@ -135,46 +135,76 @@ def get_ohlcv(symbol, interval, limit=100):
             continue
     return None
 
-def get_oi(symbol, periods=6):
+# ─── COINALYZE HELPERS ───────────────────────────────────────────
+
+def cl_symbol(symbol):
+    # Coinalyze aggregated perpetual format
+    return f"{symbol}USDT_PERP.A"
+
+def get_oi_coinalyze(symbol, periods=6):
     try:
         r = requests.get(
-            "https://fapi.binance.com/futures/data/openInterestHist",
-            params={"symbol": f"{symbol}USDT", "period": "1h", "limit": periods},
+            "https://api.coinalyze.net/v1/open-interest-history",
+            params={
+                "symbols":   cl_symbol(symbol),
+                "interval":  "1hour",
+                "limit":     periods,
+                "api_key":   COINALYZE_KEY
+            },
             timeout=10
         )
         data = r.json()
-        if not data or isinstance(data, dict):
+        if not data or not isinstance(data, list):
             return None
-        return [float(d["sumOpenInterest"]) for d in data]
-    except Exception:
+        history = data[0].get("history", [])
+        if not history:
+            return None
+        return [float(h["o"]) for h in history]
+    except Exception as e:
+        print(f"[Service1] Coinalyze OI error {symbol}: {e}")
         return None
 
-def get_funding(symbol):
+def get_funding_coinalyze(symbol):
     try:
         r = requests.get(
-            "https://fapi.binance.com/fapi/v1/fundingRate",
-            params={"symbol": f"{symbol}USDT", "limit": 1},
+            "https://api.coinalyze.net/v1/funding-rate",
+            params={
+                "symbols": cl_symbol(symbol),
+                "api_key": COINALYZE_KEY
+            },
             timeout=10
         )
         data = r.json()
-        if not data or isinstance(data, dict):
+        if not data or not isinstance(data, list):
             return None
-        return float(data[-1]["fundingRate"])
-    except Exception:
+        return float(data[0].get("value", 0))
+    except Exception as e:
+        print(f"[Service1] Coinalyze Funding error {symbol}: {e}")
         return None
 
-def get_longshort(symbol):
+def get_longshort_coinalyze(symbol):
     try:
         r = requests.get(
-            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
-            params={"symbol": f"{symbol}USDT", "period": "1h", "limit": 1},
+            "https://api.coinalyze.net/v1/long-short-ratio-history",
+            params={
+                "symbols":  cl_symbol(symbol),
+                "interval": "1hour",
+                "limit":    1,
+                "api_key":  COINALYZE_KEY
+            },
             timeout=10
         )
         data = r.json()
-        if not data or isinstance(data, dict):
+        if not data or not isinstance(data, list):
             return None, None
-        return float(data[-1]["longAccount"]), float(data[-1]["shortAccount"])
-    except Exception:
+        history = data[0].get("history", [])
+        if not history:
+            return None, None
+        long_pct  = float(history[-1].get("l", 0))
+        short_pct = float(history[-1].get("s", 0))
+        return long_pct, short_pct
+    except Exception as e:
+        print(f"[Service1] Coinalyze L/S error {symbol}: {e}")
         return None, None
 
 def get_price(symbol):
@@ -186,6 +216,8 @@ def get_price(symbol):
         return float(r.json()["price"])
     except Exception:
         return None
+
+# ─── SIGNAL CHECKS ───────────────────────────────────────────────
 
 def check_ema_cross_1h(symbol, coin, df):
     if on_cooldown(symbol, cd["ema_cross_1h"], CD_1H):
@@ -250,8 +282,8 @@ def check_ema50_reject(symbol, coin, df, tf):
         alert_type, direction = "Close Reject", "bearish"
     if not alert_type:
         return
-    price = c0["close"]
-    emoji = "🔵" if direction == "bullish" else "🟠"
+    price    = c0["close"]
+    emoji    = "🔵" if direction == "bullish" else "🟠"
     tf_label = "1H" if tf == "1h" else "15m"
     if direction == "bullish":
         what    = "Wicked BELOW EMA50 — closed ABOVE" if alert_type == "Wick Reject" else "Closed below EMA50 — reclaimed ABOVE"
@@ -276,8 +308,9 @@ def check_ema50_reject(symbol, coin, df, tf):
     print(f"[S1] EMA50 {tf_label} {alert_type} {'BULL' if direction == 'bullish' else 'BEAR'} — {symbol}")
 
 def check_oi(symbol, coin):
-    oi_list = get_oi(symbol, periods=6)
+    oi_list = get_oi_coinalyze(symbol, periods=6)
     if not oi_list or len(oi_list) < 4:
+        print(f"[DEBUG] OI {symbol} — no Coinalyze data")
         return
     price = get_price(symbol)
     if price is None:
@@ -287,6 +320,7 @@ def check_oi(symbol, coin):
         curr = oi_list[-1]
         if prev > 0:
             change = (curr - prev) / prev * 100
+            print(f"[DEBUG] OI_SPIKE {symbol} — {change:+.2f}% (need ±{OI_SPIKE_PCT}%)")
             if abs(change) >= OI_SPIKE_PCT:
                 direction = "bullish" if change > 0 else "bearish"
                 emoji     = "🔥📈" if direction == "bullish" else "🔥📉"
@@ -298,7 +332,7 @@ def check_oi(symbol, coin):
                     f"💰 Price      : `${price:,.4f}`\n"
                     f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
                     f"────────────────────\n"
-                    f"📊 OI Change  : `{change:+.2f}%`\n"
+                    f"📊 OI Change  : `{change:+.2f}%` (all exchanges)\n"
                     f"💡 {move_txt}\n"
                     f"⏰ `{now_utc()} UTC`"
                 )
@@ -362,8 +396,8 @@ def check_cvd(symbol, coin, df):
         direction = "bearish"
     if not direction:
         return
-    price = float(df.iloc[-2]["close"])
-    emoji = "🔍" if direction == "bullish" else "⚠️"
+    price   = float(df.iloc[-2]["close"])
+    emoji   = "🔍" if direction == "bullish" else "⚠️"
     detail  = "Price DOWN but CVD UP" if direction == "bullish" else "Price UP but CVD DOWN"
     meaning = "Smart money accumulating 🟢" if direction == "bullish" else "Smart money distributing 🔴"
     send_telegram(
@@ -413,7 +447,7 @@ def check_volume(symbol, coin, df_1h, df_15m):
 def check_funding(symbol, coin):
     if on_cooldown(symbol, cd["funding"], CD_4H):
         return
-    funding = get_funding(symbol)
+    funding = get_funding_coinalyze(symbol)
     if funding is None or abs(funding) < FUNDING_EXTREME:
         return
     price = get_price(symbol)
@@ -430,7 +464,7 @@ def check_funding(symbol, coin):
         f"💰 Price      : `${price:,.4f}`\n"
         f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
-        f"📊 Funding    : `{funding*100:+.4f}%`\n"
+        f"📊 Funding    : `{funding*100:+.4f}%` (all exchanges)\n"
         f"💡 {meaning}\n"
         f"⏰ `{now_utc()} UTC`"
     )
@@ -440,7 +474,7 @@ def check_funding(symbol, coin):
 def check_longshort(symbol, coin):
     if on_cooldown(symbol, cd["longshort"], CD_1H):
         return
-    long_pct, short_pct = get_longshort(symbol)
+    long_pct, short_pct = get_longshort_coinalyze(symbol)
     if long_pct is None:
         return
     price = get_price(symbol)
@@ -484,11 +518,11 @@ def run():
         "1. 1H EMA 12/21 Cross + Volume\n"
         "2. 1H EMA50 Wick/Close Reject + Volume\n"
         "3. 15m EMA50 Wick/Close Reject + Volume\n"
-        "4. 1H OI Spike + Acceleration\n"
+        "4. 1H OI Spike + Acceleration (Coinalyze)\n"
         "5. 1H CVD Divergence\n"
         "6. 1H + 15m Volume Spike\n"
-        "7. Funding Rate Extreme\n"
-        "8. Long/Short Ratio Extreme\n"
+        "7. Funding Rate Extreme (Coinalyze)\n"
+        "8. Long/Short Ratio Extreme (Coinalyze)\n"
         "────────────────────\n"
         "💰 MC > $1B | Futures only | Scan every 15 min"
     )
@@ -516,7 +550,7 @@ def run():
                     check_longshort(symbol, coin)
                 except Exception as e:
                     print(f"[Service1] {symbol} error: {e}")
-                time.sleep(0.3)
+                time.sleep(0.5)
             print(f"[Service1] Scan complete.")
         except Exception as e:
             print(f"[Service1] Scan error: {e}")
