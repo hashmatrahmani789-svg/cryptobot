@@ -99,15 +99,14 @@ def get_futures_symbols():
         r = requests.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=15)
         data = r.json()
         symbols = set()
-        for s in data["symbols"]:
-            if s["contractType"] == "PERPETUAL" and s["quoteAsset"] == "USDT":
-                symbols.add(s["baseAsset"].upper())
+        for s in data.get("symbols", []):
+            if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT":
+                symbols.add(s.get("baseAsset", "").upper())
         print(f"[Service1] {len(symbols)} futures symbols on Binance")
         return symbols
     except Exception as e:
         print(f"[Service1] futures symbols error: {e}")
         return set()
-
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
         "https://fapi.binance.com/fapi/v1/klines",
