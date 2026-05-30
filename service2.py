@@ -14,6 +14,11 @@ EMA_FAST       = 12
 EMA_SLOW       = 21
 EMA_TREND      = 50
 
+STABLECOINS = {
+    "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
+    "PYUSD","FRAX","LUSD","GUSD","USDJ","HUSD","SUSD","UST"
+}
+
 daily_counts = {"4h_cross": 0, "4h_ema50": 0, "daily_cross": 0}
 last_summary  = time.time()
 
@@ -42,20 +47,22 @@ def now_utc():
 def get_coins():
     try:
         r = requests.get(
-            "https://fapi.binance.com/fapi/v1/exchangeInfo",
+            "https://api.binance.com/api/v3/exchangeInfo",
             timeout=15
         )
         data = r.json()
         coins = []
+        seen  = set()
         for s in data.get("symbols", []):
-            if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT":
+            if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
                 sym = s.get("baseAsset", "").upper()
-                if sym:
+                if sym and sym not in STABLECOINS and sym not in seen:
+                    seen.add(sym)
                     coins.append({"symbol": sym, "market_cap": 0})
-        print(f"[S2] {len(coins)} perpetual pairs from Binance")
+        print(f"[S2] {len(coins)} coins from Binance spot")
         return coins
     except Exception as e:
-        print(f"[S2] Binance exchangeInfo error: {e}")
+        print(f"[S2] Binance error: {e}")
         return []
 
 def get_ohlcv(symbol, interval, limit=100):
@@ -220,7 +227,7 @@ def run():
         "2. 4H EMA50 Wick + Close Reject\n"
         "3. Daily EMA 12/21 Cross\n"
         "────────────────────\n"
-        "📊 All Binance Futures pairs | Scan every 4H"
+        "📊 All Binance USDT pairs | Scan every 4H"
     )
     while True:
         try:

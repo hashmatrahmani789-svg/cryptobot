@@ -43,6 +43,11 @@ cd = {
     "longshort":    {},
 }
 
+STABLECOINS = {
+    "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
+    "PYUSD","FRAX","LUSD","GUSD","USDJ","HUSD","SUSD","UST"
+}
+
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -62,20 +67,22 @@ def now_utc():
 def get_coins():
     try:
         r = requests.get(
-            "https://fapi.binance.com/fapi/v1/exchangeInfo",
+            "https://api.binance.com/api/v3/exchangeInfo",
             timeout=15
         )
         data = r.json()
         coins = []
+        seen  = set()
         for s in data.get("symbols", []):
-            if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT":
+            if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
                 sym = s.get("baseAsset", "").upper()
-                if sym:
+                if sym and sym not in STABLECOINS and sym not in seen:
+                    seen.add(sym)
                     coins.append({"symbol": sym, "market_cap": 0})
-        print(f"[S1] {len(coins)} perpetual pairs from Binance")
+        print(f"[S1] {len(coins)} coins from Binance spot")
         return coins
     except Exception as e:
-        print(f"[S1] Binance exchangeInfo error: {e}")
+        print(f"[S1] Binance error: {e}")
         return []
 
 def get_ohlcv(symbol, interval, limit=100):
@@ -478,7 +485,7 @@ def run():
         "7. Funding Rate Extreme (Coinalyze)\n"
         "8. Long/Short Ratio Extreme (Coinalyze)\n"
         "────────────────────\n"
-        "📊 All Binance Futures pairs | Scan every 15 min"
+        "📊 All Binance USDT pairs | Scan every 15 min"
     )
     while True:
         try:
