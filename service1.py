@@ -94,6 +94,20 @@ def get_coins():
             break
     return coins
 
+def get_futures_symbols():
+    try:
+        r = requests.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=15)
+        data = r.json()
+        symbols = set()
+        for s in data["symbols"]:
+            if s["contractType"] == "PERPETUAL" and s["quoteAsset"] == "USDT":
+                symbols.add(s["baseAsset"].upper())
+        print(f"[Service1] {len(symbols)} futures symbols available on Binance")
+        return symbols
+    except Exception as e:
+        print(f"[Service1] futures symbols error: {e}")
+        return set()
+
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
         "https://fapi.binance.com/fapi/v1/klines",
@@ -185,11 +199,10 @@ def check_ema_cross_1h(symbol, coin, df):
     bullish = prev["ema12"] <= prev["ema21"] and curr["ema12"] > curr["ema21"]
     bearish = prev["ema12"] >= prev["ema21"] and curr["ema12"] < curr["ema21"]
     if not bullish and not bearish:
-        print(f"[DEBUG] EMA_CROSS_1H {symbol} — no cross detected (ema12={curr['ema12']:.4f} ema21={curr['ema21']:.4f})")
         return
     vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
     if vol_ratio < VOL_MIN_RATIO:
-        print(f"[DEBUG] EMA_CROSS_1H {symbol} — CROSS FOUND but low vol {vol_ratio:.2f}x (need {VOL_MIN_RATIO}x)")
+        print(f"[DEBUG] EMA_CROSS_1H {symbol} — cross found but low vol {vol_ratio:.2f}x")
         return
     price = curr["close"]
     emoji = "🟢" if bullish else "🔴"
@@ -224,7 +237,6 @@ def check_ema50_reject(symbol, coin, df, tf):
     ema0 = c0["ema50"]
     vol_ratio = c0["volume"] / c0["avg_vol"] if c0["avg_vol"] else 0
     if vol_ratio < VOL_MIN_RATIO:
-        print(f"[DEBUG] EMA50_REJECT {tf} {symbol} — low vol {vol_ratio:.2f}x (need {VOL_MIN_RATIO}x)")
         return
     alert_type = None
     direction  = None
@@ -237,7 +249,6 @@ def check_ema50_reject(symbol, coin, df, tf):
     elif c1["close"] > ema1 and c0["close"] < ema0:
         alert_type, direction = "Close Reject", "bearish"
     if not alert_type:
-        print(f"[DEBUG] EMA50_REJECT {tf} {symbol} — vol ok {vol_ratio:.2f}x but no price/EMA interaction")
         return
     price = c0["close"]
     emoji = "🔵" if direction == "bullish" else "🟠"
@@ -267,18 +278,15 @@ def check_ema50_reject(symbol, coin, df, tf):
 def check_oi(symbol, coin):
     oi_list = get_oi(symbol, periods=6)
     if not oi_list or len(oi_list) < 4:
-        print(f"[DEBUG] OI {symbol} — no data or insufficient periods")
         return
     price = get_price(symbol)
     if price is None:
-        print(f"[DEBUG] OI {symbol} — no price data (not on futures?)")
         return
     if not on_cooldown(symbol, cd["oi_spike"], CD_1H):
         prev = oi_list[-2]
         curr = oi_list[-1]
         if prev > 0:
             change = (curr - prev) / prev * 100
-            print(f"[DEBUG] OI_SPIKE {symbol} — change={change:+.2f}% (need ±{OI_SPIKE_PCT}%)")
             if abs(change) >= OI_SPIKE_PCT:
                 direction = "bullish" if change > 0 else "bearish"
                 emoji     = "🔥📈" if direction == "bullish" else "🔥📉"
@@ -305,7 +313,6 @@ def check_oi(symbol, coin):
                 break
             changes.append((c - p) / p * 100)
         recent = changes[-OI_PERIODS:]
-        print(f"[DEBUG] OI_ACCEL {symbol} — recent changes: {[f'{x:+.2f}%' for x in recent]}")
         if (len(recent) == OI_PERIODS and
             all(c > 0 for c in recent) and
             all(c >= OI_ACCEL_MIN for c in recent) and
@@ -341,7 +348,6 @@ def check_cvd(symbol, coin, df):
     cvd_change  = cvd_end - cvd_start
     cvd_ratio   = abs(cvd_change) / avg_vol if avg_vol else 0
     if cvd_ratio < CVD_MIN_RATIO:
-        print(f"[DEBUG] CVD {symbol} — ratio={cvd_ratio:.3f} too low (need {CVD_MIN_RATIO})")
         return
     mid        = len(recent) // 2
     cvd_first  = recent["cvd"].iloc[:mid].mean()
@@ -355,7 +361,6 @@ def check_cvd(symbol, coin, df):
     elif price_up and cvd_change < 0 and cvd_second < cvd_first:
         direction = "bearish"
     if not direction:
-        print(f"[DEBUG] CVD {symbol} — ratio ok {cvd_ratio:.3f} but no divergence (price_chg={price_chg:+.2f}% cvd_change={cvd_change:+.0f})")
         return
     price = float(df.iloc[-2]["close"])
     emoji = "🔍" if direction == "bullish" else "⚠️"
@@ -389,7 +394,6 @@ def check_volume(symbol, coin, df_1h, df_15m):
         d["avg"]  = d["volume"].rolling(VOL_ROLLING).mean()
         curr      = d.iloc[-2]
         vol_ratio = curr["volume"] / curr["avg"] if curr["avg"] else 0
-        print(f"[DEBUG] VOL_{label} {symbol} — {vol_ratio:.2f}x (need {VOL_MIN_RATIO * 1.5:.2f}x)")
         if vol_ratio >= VOL_MIN_RATIO * 1.5:
             price = curr["close"]
             send_telegram(
@@ -410,11 +414,7 @@ def check_funding(symbol, coin):
     if on_cooldown(symbol, cd["funding"], CD_4H):
         return
     funding = get_funding(symbol)
-    if funding is None:
-        print(f"[DEBUG] FUNDING {symbol} — no data")
-        return
-    print(f"[DEBUG] FUNDING {symbol} — {funding*100:+.4f}% (need ±{FUNDING_EXTREME*100:.2f}%)")
-    if abs(funding) < FUNDING_EXTREME:
+    if funding is None or abs(funding) < FUNDING_EXTREME:
         return
     price = get_price(symbol)
     if price is None:
@@ -442,9 +442,7 @@ def check_longshort(symbol, coin):
         return
     long_pct, short_pct = get_longshort(symbol)
     if long_pct is None:
-        print(f"[DEBUG] LONGSHORT {symbol} — no data")
         return
-    print(f"[DEBUG] LONGSHORT {symbol} — longs={long_pct*100:.1f}% shorts={short_pct*100:.1f}% (need {LS_EXTREME*100:.0f}%)")
     price = get_price(symbol)
     if price is None:
         return
@@ -492,13 +490,15 @@ def run():
         "7. Funding Rate Extreme\n"
         "8. Long/Short Ratio Extreme\n"
         "────────────────────\n"
-        "💰 MC > $1B | Scan every 15 min | DEBUG MODE ON"
+        "💰 MC > $1B | Futures only | Scan every 15 min"
     )
     while True:
         try:
             print(f"\n[Service1] Scanning... {now_utc()} UTC")
-            coins = get_coins()
-            print(f"[Service1] {len(coins)} coins loaded")
+            coins        = get_coins()
+            futures_syms = get_futures_symbols()
+            coins        = [c for c in coins if c["symbol"] in futures_syms]
+            print(f"[Service1] {len(coins)} coins after futures filter")
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
