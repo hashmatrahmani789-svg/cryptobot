@@ -72,7 +72,7 @@ def get_coins():
         except Exception as e:
             print(f"[Service2] CoinGecko error: {e}")
             break
-    continue
+    return coins  # ✅ FIXED: was "continue"
 
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
