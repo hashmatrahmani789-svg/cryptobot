@@ -7,7 +7,7 @@ BOT_TOKEN       = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID         = "8118939134"
 COINALYZE_KEY   = "71b88a8f-d87d-4be6-bebe-8bc2c3053073"
 
-MARKET_CAP_MIN  = 1_000_000_000
+MARKET_CAP_MIN  = 500_000_000
 SCAN_INTERVAL   = 15 * 60
 
 CD_1H           = 3600
@@ -19,9 +19,9 @@ EMA_SLOW        = 21
 EMA_TREND       = 50
 
 VOL_ROLLING     = 20
-VOL_MIN_RATIO   = 1.5
+VOL_MIN_RATIO   = 1.2
 
-OI_SPIKE_PCT    = 2.0
+OI_SPIKE_PCT    = 1.5
 OI_ACCEL_MIN    = 1.0
 OI_ACCEL_STEP   = 0.3
 OI_PERIODS      = 3
@@ -29,8 +29,8 @@ OI_PERIODS      = 3
 CVD_LOOKBACK    = 20
 CVD_MIN_RATIO   = 0.25
 
-FUNDING_EXTREME = 0.05
-LS_EXTREME      = 0.70
+FUNDING_EXTREME = 0.03
+LS_EXTREME      = 0.65
 
 cd = {
     "ema_cross_1h": {},
@@ -133,7 +133,7 @@ def get_price(symbol):
             f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}USDT",
             f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT",
         ]:
-            r = requests.get(url, timeout=10)
+            r    = requests.get(url, timeout=10)
             data = r.json()
             if "price" in data:
                 return float(data["price"])
@@ -230,7 +230,6 @@ def check_ema_cross_1h(symbol, coin, df):
         return
     vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
     if vol_ratio < VOL_MIN_RATIO:
-        print(f"[S1] EMA_CROSS_1H {symbol} — cross but low vol {vol_ratio:.2f}x")
         return
     price = curr["close"]
     emoji = "🟢" if bullish else "🔴"
@@ -311,8 +310,8 @@ def check_oi(symbol, coin):
     if price is None:
         return
     if not on_cooldown(symbol, cd["oi_spike"], CD_1H):
-        prev   = oi_list[-2]
-        curr   = oi_list[-1]
+        prev = oi_list[-2]
+        curr = oi_list[-1]
         if prev > 0:
             change = (curr - prev) / prev * 100
             if abs(change) >= OI_SPIKE_PCT:
@@ -520,7 +519,7 @@ def run():
         "7. Funding Rate Extreme (Coinalyze)\n"
         "8. Long/Short Ratio Extreme (Coinalyze)\n"
         "────────────────────\n"
-        "💰 MC > $1B | Scan every 15 min"
+        "💰 MC > $500M | Scan every 15 min"
     )
     while True:
         try:
