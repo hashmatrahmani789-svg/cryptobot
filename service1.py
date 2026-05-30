@@ -6,9 +6,7 @@ from datetime import datetime, timezone
 BOT_TOKEN       = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID         = "8118939134"
 COINALYZE_KEY   = "71b88a8f-d87d-4be6-bebe-8bc2c3053073"
-COINGECKO_KEY   = "CG-YeMvLMXntDHrFrhsSc3RVte1"
 
-MARKET_CAP_MIN  = 500_000_000
 SCAN_INTERVAL   = 15 * 60
 
 CD_1H           = 3600
@@ -62,44 +60,23 @@ def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 def get_coins():
-    coins = []
-    page  = 1
-    while True:
-        try:
-            r = requests.get(
-                "https://pro-api.coingecko.com/api/v3/coins/markets",
-                params={
-                    "vs_currency": "usd",
-                    "order": "market_cap_desc",
-                    "per_page": 250,
-                    "page": page,
-                    "sparkline": False,
-                    "x_cg_demo_api_key": COINGECKO_KEY
-                },
-                timeout=30
-            )
-            r.encoding = "utf-8"
-            data = r.json()
-            if not data or not isinstance(data, list):
-                print(f"[S1] CoinGecko empty response page {page}")
-                break
-            found_below = False
-            for coin in data:
-                mc = coin.get("market_cap") or 0
-                if mc < MARKET_CAP_MIN:
-                    found_below = True
-                    continue
-                sym = coin.get("symbol", "").upper()
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/fapi/v1/exchangeInfo",
+            timeout=15
+        )
+        data = r.json()
+        coins = []
+        for s in data.get("symbols", []):
+            if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT":
+                sym = s.get("baseAsset", "").upper()
                 if sym:
-                    coins.append({"symbol": sym, "market_cap": mc})
-            if found_below:
-                break
-            page += 1
-            time.sleep(2.0)
-        except Exception as e:
-            print(f"[S1] CoinGecko error: {e}")
-            break
-    return coins
+                    coins.append({"symbol": sym, "market_cap": 0})
+        print(f"[S1] {len(coins)} perpetual pairs from Binance")
+        return coins
+    except Exception as e:
+        print(f"[S1] Binance exchangeInfo error: {e}")
+        return []
 
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
@@ -215,7 +192,7 @@ def get_longshort_coinalyze(symbol):
     except Exception:
         return None, None
 
-def check_ema_cross_1h(symbol, coin, df):
+def check_ema_cross_1h(symbol, df):
     if on_cooldown(symbol, cd["ema_cross_1h"], CD_1H):
         return
     df = df.copy()
@@ -238,7 +215,6 @@ def check_ema_cross_1h(symbol, coin, df):
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
-        f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
         f"📈 {txt}\n"
         f"🔊 Volume     : `{vol_ratio:.2f}x` avg\n"
@@ -248,7 +224,7 @@ def check_ema_cross_1h(symbol, coin, df):
     mark(symbol, cd["ema_cross_1h"])
     print(f"[S1] EMA CROSS 1H {'BULL' if bullish else 'BEAR'} — {symbol}")
 
-def check_ema50_reject(symbol, coin, df, tf):
+def check_ema50_reject(symbol, df, tf):
     store_key = "ema50_1h" if tf == "1h" else "ema50_15m"
     cooldown  = CD_1H if tf == "1h" else CD_15M
     if on_cooldown(symbol, cd[store_key], cooldown):
@@ -285,7 +261,6 @@ def check_ema50_reject(symbol, coin, df, tf):
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
-        f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
         f"⚡ {what}\n"
         f"📊 EMA50      : `{ema0:,.4f}`\n"
@@ -295,7 +270,7 @@ def check_ema50_reject(symbol, coin, df, tf):
     mark(symbol, cd[store_key])
     print(f"[S1] EMA50 {tf_label} {alert_type} {'BULL' if direction == 'bullish' else 'BEAR'} — {symbol}")
 
-def check_oi(symbol, coin):
+def check_oi(symbol):
     oi_list = get_oi_coinalyze(symbol, periods=6)
     if not oi_list or len(oi_list) < 4:
         return
@@ -316,7 +291,6 @@ def check_oi(symbol, coin):
                     f"────────────────────\n"
                     f"📌 *{symbol}*\n"
                     f"💰 Price      : `${price:,.4f}`\n"
-                    f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
                     f"────────────────────\n"
                     f"📊 OI Change  : `{change:+.2f}%` (all exchanges)\n"
                     f"💡 {move_txt}\n"
@@ -343,7 +317,6 @@ def check_oi(symbol, coin):
                 f"────────────────────\n"
                 f"📌 *{symbol}*\n"
                 f"💰 Price      : `${price:,.4f}`\n"
-                f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
                 f"────────────────────\n"
                 f"📈 OI growing faster each period:\n"
                 f"{periods_txt}\n"
@@ -353,7 +326,7 @@ def check_oi(symbol, coin):
             mark(symbol, cd["oi_accel"])
             print(f"[S1] OI ACCEL — {symbol}")
 
-def check_cvd(symbol, coin, df):
+def check_cvd(symbol, df):
     if on_cooldown(symbol, cd["cvd"], CD_1H):
         return
     df = df.copy()
@@ -391,7 +364,6 @@ def check_cvd(symbol, coin, df):
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
-        f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
         f"⚡ {detail}\n"
         f"🌊 CVD Change : `{cvd_change:+.0f}`\n"
@@ -403,7 +375,7 @@ def check_cvd(symbol, coin, df):
     mark(symbol, cd["cvd"])
     print(f"[S1] CVD {'BULL' if direction == 'bullish' else 'BEAR'} — {symbol}")
 
-def check_volume(symbol, coin, df_1h, df_15m):
+def check_volume(symbol, df_1h, df_15m):
     for df, store_key, cd_time, label in [
         (df_1h,  "vol_1h",  CD_1H,  "1H"),
         (df_15m, "vol_15m", CD_15M, "15m"),
@@ -421,7 +393,6 @@ def check_volume(symbol, coin, df_1h, df_15m):
                 f"────────────────────\n"
                 f"📌 *{symbol}*\n"
                 f"💰 Price      : `${price:,.4f}`\n"
-                f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
                 f"────────────────────\n"
                 f"📊 Volume     : `{vol_ratio:.2f}x` avg\n"
                 f"💡 Unusual volume — watch for breakout\n"
@@ -430,7 +401,7 @@ def check_volume(symbol, coin, df_1h, df_15m):
             mark(symbol, cd[store_key])
             print(f"[S1] VOL SPIKE {label} — {symbol} {vol_ratio:.2f}x")
 
-def check_funding(symbol, coin):
+def check_funding(symbol):
     if on_cooldown(symbol, cd["funding"], CD_4H):
         return
     funding = get_funding_coinalyze(symbol)
@@ -448,7 +419,6 @@ def check_funding(symbol, coin):
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
-        f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
         f"📊 Funding    : `{funding*100:+.4f}%` (all exchanges)\n"
         f"💡 {meaning}\n"
@@ -457,7 +427,7 @@ def check_funding(symbol, coin):
     mark(symbol, cd["funding"])
     print(f"[S1] FUNDING — {symbol} {funding*100:+.4f}%")
 
-def check_longshort(symbol, coin):
+def check_longshort(symbol):
     if on_cooldown(symbol, cd["longshort"], CD_1H):
         return
     long_pct, short_pct = get_longshort_coinalyze(symbol)
@@ -472,7 +442,6 @@ def check_longshort(symbol, coin):
             f"────────────────────\n"
             f"📌 *{symbol}*\n"
             f"💰 Price      : `${price:,.4f}`\n"
-            f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
             f"────────────────────\n"
             f"📊 Longs      : `{long_pct*100:.1f}%`\n"
             f"📊 Shorts     : `{short_pct*100:.1f}%`\n"
@@ -487,7 +456,6 @@ def check_longshort(symbol, coin):
             f"────────────────────\n"
             f"📌 *{symbol}*\n"
             f"💰 Price      : `${price:,.4f}`\n"
-            f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
             f"────────────────────\n"
             f"📊 Longs      : `{long_pct*100:.1f}%`\n"
             f"📊 Shorts     : `{short_pct*100:.1f}%`\n"
@@ -501,7 +469,7 @@ def run():
     send_telegram(
         "1️⃣ *Service 1 Started* ✅\n"
         "────────────────────\n"
-        "1. 1H EMA 12/21 Cross (no vol filter)\n"
+        "1. 1H EMA 12/21 Cross\n"
         "2. 1H EMA50 Wick/Close Reject\n"
         "3. 15m EMA50 Wick/Close Reject\n"
         "4. 1H OI Spike + Acceleration (Coinalyze)\n"
@@ -510,28 +478,27 @@ def run():
         "7. Funding Rate Extreme (Coinalyze)\n"
         "8. Long/Short Ratio Extreme (Coinalyze)\n"
         "────────────────────\n"
-        "💰 MC > $500M | Scan every 15 min"
+        "📊 All Binance Futures pairs | Scan every 15 min"
     )
     while True:
         try:
             print(f"\n[S1] Scanning... {now_utc()} UTC")
             coins = get_coins()
-            print(f"[S1] {len(coins)} coins loaded")
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
                     df_1h  = get_ohlcv(symbol, "1h",  limit=100)
                     df_15m = get_ohlcv(symbol, "15m", limit=100)
                     if df_1h is not None:
-                        check_ema_cross_1h(symbol, coin, df_1h)
-                        check_ema50_reject(symbol, coin, df_1h, "1h")
-                        check_cvd(symbol, coin, df_1h)
-                    check_volume(symbol, coin, df_1h, df_15m)
+                        check_ema_cross_1h(symbol, df_1h)
+                        check_ema50_reject(symbol, df_1h, "1h")
+                        check_cvd(symbol, df_1h)
+                    check_volume(symbol, df_1h, df_15m)
                     if df_15m is not None:
-                        check_ema50_reject(symbol, coin, df_15m, "15m")
-                    check_oi(symbol, coin)
-                    check_funding(symbol, coin)
-                    check_longshort(symbol, coin)
+                        check_ema50_reject(symbol, df_15m, "15m")
+                    check_oi(symbol)
+                    check_funding(symbol)
+                    check_longshort(symbol)
                 except Exception as e:
                     print(f"[S1] {symbol} error: {e}")
                 time.sleep(0.5)

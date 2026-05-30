@@ -5,11 +5,8 @@ from datetime import datetime, timezone
 
 BOT_TOKEN      = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID        = "8118939134"
-COINGECKO_KEY  = "CG-YeMvLMXntDHrFrhsSc3RVte1"
 
-MARKET_CAP_MIN = 500_000_000
 SCAN_INTERVAL  = 4 * 60 * 60
-
 CD_4H          = 14400
 CD_DAILY       = 86400
 
@@ -18,7 +15,7 @@ EMA_SLOW       = 21
 EMA_TREND      = 50
 
 daily_counts = {"4h_cross": 0, "4h_ema50": 0, "daily_cross": 0}
-last_summary = time.time()
+last_summary  = time.time()
 
 cd = {
     "4h_cross":    {},
@@ -43,44 +40,23 @@ def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 def get_coins():
-    coins = []
-    page  = 1
-    while True:
-        try:
-            r = requests.get(
-                "https://pro-api.coingecko.com/api/v3/coins/markets",
-                params={
-                    "vs_currency": "usd",
-                    "order": "market_cap_desc",
-                    "per_page": 250,
-                    "page": page,
-                    "sparkline": False,
-                    "x_cg_demo_api_key": COINGECKO_KEY
-                },
-                timeout=30
-            )
-            r.encoding = "utf-8"
-            data = r.json()
-            if not data or not isinstance(data, list):
-                print(f"[S2] CoinGecko empty response page {page}")
-                break
-            found_below = False
-            for coin in data:
-                mc = coin.get("market_cap") or 0
-                if mc < MARKET_CAP_MIN:
-                    found_below = True
-                    continue
-                sym = coin.get("symbol", "").upper()
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/fapi/v1/exchangeInfo",
+            timeout=15
+        )
+        data = r.json()
+        coins = []
+        for s in data.get("symbols", []):
+            if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT":
+                sym = s.get("baseAsset", "").upper()
                 if sym:
-                    coins.append({"symbol": sym, "market_cap": mc})
-            if found_below:
-                break
-            page += 1
-            time.sleep(2.0)
-        except Exception as e:
-            print(f"[S2] CoinGecko error: {e}")
-            break
-    return coins
+                    coins.append({"symbol": sym, "market_cap": 0})
+        print(f"[S2] {len(coins)} perpetual pairs from Binance")
+        return coins
+    except Exception as e:
+        print(f"[S2] Binance exchangeInfo error: {e}")
+        return []
 
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
@@ -111,7 +87,7 @@ def get_ohlcv(symbol, interval, limit=100):
             continue
     return None
 
-def check_4h_cross(symbol, coin, df):
+def check_4h_cross(symbol, df):
     if on_cooldown(symbol, cd["4h_cross"], CD_4H):
         return
     df = df.copy()
@@ -132,7 +108,6 @@ def check_4h_cross(symbol, coin, df):
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
-        f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
         f"📈 {txt}\n"
         f"📊 EMA12      : `{curr['ema12']:,.4f}`\n"
@@ -144,7 +119,7 @@ def check_4h_cross(symbol, coin, df):
     daily_counts["4h_cross"] += 1
     print(f"[S2] 4H CROSS {'BULL' if bullish else 'BEAR'} — {symbol}")
 
-def check_4h_ema50(symbol, coin, df):
+def check_4h_ema50(symbol, df):
     if on_cooldown(symbol, cd["4h_ema50"], CD_4H):
         return
     df = df.copy()
@@ -178,7 +153,6 @@ def check_4h_ema50(symbol, coin, df):
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
-        f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
         f"📊 Type       : `{alert_type}`\n"
         f"⚡ {what}\n"
@@ -190,7 +164,7 @@ def check_4h_ema50(symbol, coin, df):
     daily_counts["4h_ema50"] += 1
     print(f"[S2] 4H EMA50 {alert_type} {'BULL' if direction == 'bullish' else 'BEAR'} — {symbol}")
 
-def check_daily_cross(symbol, coin, df):
+def check_daily_cross(symbol, df):
     if on_cooldown(symbol, cd["daily_cross"], CD_DAILY):
         return
     df = df.copy()
@@ -211,7 +185,6 @@ def check_daily_cross(symbol, coin, df):
         f"────────────────────\n"
         f"📌 *{symbol}*\n"
         f"💰 Price      : `${price:,.4f}`\n"
-        f"📊 MC         : `${coin['market_cap']/1e9:.2f}B`\n"
         f"────────────────────\n"
         f"📈 {txt}\n"
         f"📊 EMA12      : `{curr['ema12']:,.4f}`\n"
@@ -223,12 +196,11 @@ def check_daily_cross(symbol, coin, df):
     daily_counts["daily_cross"] += 1
     print(f"[S2] DAILY CROSS {'BULL' if bullish else 'BEAR'} — {symbol}")
 
-def send_daily_summary(coins_scanned):
+def send_daily_summary():
     global last_summary
     send_telegram(
         f"📊 *Service 2 Daily Summary*\n"
         f"────────────────────\n"
-        f"🔍 Coins scanned    : `{coins_scanned}`\n"
         f"🟢 4H EMA 12/21     : `{daily_counts['4h_cross']} alerts`\n"
         f"🔵 4H EMA50 Reject  : `{daily_counts['4h_ema50']} alerts`\n"
         f"🌙 Daily EMA 12/21  : `{daily_counts['daily_cross']} alerts`\n"
@@ -248,32 +220,28 @@ def run():
         "2. 4H EMA50 Wick + Close Reject\n"
         "3. Daily EMA 12/21 Cross\n"
         "────────────────────\n"
-        "💰 MC > $500M | Scan every 4H | No volume filter"
+        "📊 All Binance Futures pairs | Scan every 4H"
     )
-    coins_scanned = 0
     while True:
         try:
             print(f"\n[S2] Scanning... {now_utc()} UTC")
-            coins         = get_coins()
-            coins_scanned += len(coins)
-            print(f"[S2] {len(coins)} coins loaded")
+            coins = get_coins()
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
                     df_4h    = get_ohlcv(symbol, "4h", limit=100)
                     df_daily = get_ohlcv(symbol, "1d", limit=100)
                     if df_4h is not None:
-                        check_4h_cross(symbol, coin, df_4h)
-                        check_4h_ema50(symbol, coin, df_4h)
+                        check_4h_cross(symbol, df_4h)
+                        check_4h_ema50(symbol, df_4h)
                     if df_daily is not None:
-                        check_daily_cross(symbol, coin, df_daily)
+                        check_daily_cross(symbol, df_daily)
                 except Exception as e:
                     print(f"[S2] {symbol} error: {e}")
                 time.sleep(0.3)
             print(f"[S2] Scan complete.")
             if time.time() - last_summary >= 86400:
-                send_daily_summary(coins_scanned)
-                coins_scanned = 0
+                send_daily_summary()
         except Exception as e:
             print(f"[S2] Scan error: {e}")
         time.sleep(SCAN_INTERVAL)
