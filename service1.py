@@ -50,7 +50,7 @@ def send_telegram(msg):
     try:
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
     except Exception as e:
-        print(f"[Service1] Telegram error: {e}")
+        print(f"[S1] Telegram error: {e}")
 
 def on_cooldown(symbol, store, seconds):
     return symbol in store and time.time() - store[symbol] < seconds
@@ -60,6 +60,8 @@ def mark(symbol, store):
 
 def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+# ─── DATA FETCHERS ────────────────────────────────────────────────
 
 def get_coins():
     coins = []
@@ -90,30 +92,21 @@ def get_coins():
             page += 1
             time.sleep(2.0)
         except Exception as e:
-            print(f"[Service1] CoinGecko error: {e}")
+            print(f"[S1] CoinGecko error: {e}")
             break
     return coins
 
-def get_futures_symbols():
-    try:
-        r = requests.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=15)
-        data = r.json()
-        symbols = set()
-        for s in data.get("symbols", []):
-            if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT":
-                symbols.add(s.get("baseAsset", "").upper())
-        print(f"[Service1] {len(symbols)} futures symbols on Binance")
-        return symbols
-    except Exception as e:
-        print(f"[Service1] futures symbols error: {e}")
-        return set()
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
         "https://fapi.binance.com/fapi/v1/klines",
         "https://api.binance.com/api/v3/klines",
     ]:
         try:
-            r = requests.get(url, params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}, timeout=10)
+            r = requests.get(
+                url,
+                params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit},
+                timeout=10
+            )
             data = r.json()
             if not data or isinstance(data, dict):
                 continue
@@ -134,10 +127,21 @@ def get_ohlcv(symbol, interval, limit=100):
             continue
     return None
 
-# ─── COINALYZE HELPERS ───────────────────────────────────────────
+def get_price(symbol):
+    try:
+        for url in [
+            f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}USDT",
+            f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT",
+        ]:
+            r = requests.get(url, timeout=10)
+            data = r.json()
+            if "price" in data:
+                return float(data["price"])
+    except Exception:
+        pass
+    return None
 
-def cl_symbol(symbol):
-    # Coinalyze aggregated perpetual format
+def cl_sym(symbol):
     return f"{symbol}USDT_PERP.A"
 
 def get_oi_coinalyze(symbol, periods=6):
@@ -145,10 +149,10 @@ def get_oi_coinalyze(symbol, periods=6):
         r = requests.get(
             "https://api.coinalyze.net/v1/open-interest-history",
             params={
-                "symbols":   cl_symbol(symbol),
-                "interval":  "1hour",
-                "limit":     periods,
-                "api_key":   COINALYZE_KEY
+                "symbols":  cl_sym(symbol),
+                "interval": "1hour",
+                "limit":    periods,
+                "api_key":  COINALYZE_KEY
             },
             timeout=10
         )
@@ -156,11 +160,11 @@ def get_oi_coinalyze(symbol, periods=6):
         if not data or not isinstance(data, list):
             return None
         history = data[0].get("history", [])
-        if not history:
+        if len(history) < 4:
             return None
         return [float(h["o"]) for h in history]
     except Exception as e:
-        print(f"[Service1] Coinalyze OI error {symbol}: {e}")
+        print(f"[S1] Coinalyze OI error {symbol}: {e}")
         return None
 
 def get_funding_coinalyze(symbol):
@@ -168,7 +172,7 @@ def get_funding_coinalyze(symbol):
         r = requests.get(
             "https://api.coinalyze.net/v1/funding-rate",
             params={
-                "symbols": cl_symbol(symbol),
+                "symbols": cl_sym(symbol),
                 "api_key": COINALYZE_KEY
             },
             timeout=10
@@ -176,9 +180,12 @@ def get_funding_coinalyze(symbol):
         data = r.json()
         if not data or not isinstance(data, list):
             return None
-        return float(data[0].get("value", 0))
+        val = data[0].get("value")
+        if val is None:
+            return None
+        return float(val)
     except Exception as e:
-        print(f"[Service1] Coinalyze Funding error {symbol}: {e}")
+        print(f"[S1] Coinalyze Funding error {symbol}: {e}")
         return None
 
 def get_longshort_coinalyze(symbol):
@@ -186,7 +193,7 @@ def get_longshort_coinalyze(symbol):
         r = requests.get(
             "https://api.coinalyze.net/v1/long-short-ratio-history",
             params={
-                "symbols":  cl_symbol(symbol),
+                "symbols":  cl_sym(symbol),
                 "interval": "1hour",
                 "limit":    1,
                 "api_key":  COINALYZE_KEY
@@ -203,20 +210,10 @@ def get_longshort_coinalyze(symbol):
         short_pct = float(history[-1].get("s", 0))
         return long_pct, short_pct
     except Exception as e:
-        print(f"[Service1] Coinalyze L/S error {symbol}: {e}")
+        print(f"[S1] Coinalyze L/S error {symbol}: {e}")
         return None, None
 
-def get_price(symbol):
-    try:
-        r = requests.get(
-            "https://fapi.binance.com/fapi/v1/ticker/price",
-            params={"symbol": f"{symbol}USDT"}, timeout=10
-        )
-        return float(r.json()["price"])
-    except Exception:
-        return None
-
-# ─── SIGNAL CHECKS ───────────────────────────────────────────────
+# ─── SIGNAL CHECKS ────────────────────────────────────────────────
 
 def check_ema_cross_1h(symbol, coin, df):
     if on_cooldown(symbol, cd["ema_cross_1h"], CD_1H):
@@ -233,7 +230,7 @@ def check_ema_cross_1h(symbol, coin, df):
         return
     vol_ratio = curr["volume"] / curr["avg_vol"] if curr["avg_vol"] else 0
     if vol_ratio < VOL_MIN_RATIO:
-        print(f"[DEBUG] EMA_CROSS_1H {symbol} — cross found but low vol {vol_ratio:.2f}x")
+        print(f"[S1] EMA_CROSS_1H {symbol} — cross but low vol {vol_ratio:.2f}x")
         return
     price = curr["close"]
     emoji = "🟢" if bullish else "🔴"
@@ -262,10 +259,10 @@ def check_ema50_reject(symbol, coin, df, tf):
     df = df.copy()
     df["ema50"]   = df["close"].ewm(span=EMA_TREND, adjust=False).mean()
     df["avg_vol"] = df["volume"].rolling(VOL_ROLLING).mean()
-    c1   = df.iloc[-3]
-    c0   = df.iloc[-2]
-    ema1 = c1["ema50"]
-    ema0 = c0["ema50"]
+    c1    = df.iloc[-3]
+    c0    = df.iloc[-2]
+    ema1  = c1["ema50"]
+    ema0  = c0["ema50"]
     vol_ratio = c0["volume"] / c0["avg_vol"] if c0["avg_vol"] else 0
     if vol_ratio < VOL_MIN_RATIO:
         return
@@ -309,17 +306,15 @@ def check_ema50_reject(symbol, coin, df, tf):
 def check_oi(symbol, coin):
     oi_list = get_oi_coinalyze(symbol, periods=6)
     if not oi_list or len(oi_list) < 4:
-        print(f"[DEBUG] OI {symbol} — no Coinalyze data")
         return
     price = get_price(symbol)
     if price is None:
         return
     if not on_cooldown(symbol, cd["oi_spike"], CD_1H):
-        prev = oi_list[-2]
-        curr = oi_list[-1]
+        prev   = oi_list[-2]
+        curr   = oi_list[-1]
         if prev > 0:
             change = (curr - prev) / prev * 100
-            print(f"[DEBUG] OI_SPIKE {symbol} — {change:+.2f}% (need ±{OI_SPIKE_PCT}%)")
             if abs(change) >= OI_SPIKE_PCT:
                 direction = "bullish" if change > 0 else "bearish"
                 emoji     = "🔥📈" if direction == "bullish" else "🔥📉"
@@ -510,6 +505,8 @@ def check_longshort(symbol, coin):
         mark(symbol, cd["longshort"])
         print(f"[S1] CROWDED SHORTS — {symbol}")
 
+# ─── MAIN ─────────────────────────────────────────────────────────
+
 def run():
     send_telegram(
         "1️⃣ *Service 1 Started* ✅\n"
@@ -523,15 +520,13 @@ def run():
         "7. Funding Rate Extreme (Coinalyze)\n"
         "8. Long/Short Ratio Extreme (Coinalyze)\n"
         "────────────────────\n"
-        "💰 MC > $1B | Futures only | Scan every 15 min"
+        "💰 MC > $1B | Scan every 15 min"
     )
     while True:
         try:
-            print(f"\n[Service1] Scanning... {now_utc()} UTC")
-            coins        = get_coins()
-            futures_syms = get_futures_symbols()
-            coins        = [c for c in coins if c["symbol"] in futures_syms]
-            print(f"[Service1] {len(coins)} coins after futures filter")
+            print(f"\n[S1] Scanning... {now_utc()} UTC")
+            coins = get_coins()
+            print(f"[S1] {len(coins)} coins loaded")
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
@@ -548,11 +543,11 @@ def run():
                     check_funding(symbol, coin)
                     check_longshort(symbol, coin)
                 except Exception as e:
-                    print(f"[Service1] {symbol} error: {e}")
+                    print(f"[S1] {symbol} error: {e}")
                 time.sleep(0.5)
-            print(f"[Service1] Scan complete.")
+            print(f"[S1] Scan complete.")
         except Exception as e:
-            print(f"[Service1] Scan error: {e}")
+            print(f"[S1] Scan error: {e}")
         time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
