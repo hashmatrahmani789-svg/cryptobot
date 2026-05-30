@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 
 BOT_TOKEN      = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID        = "8118939134"
+COINGECKO_KEY  = "CG-YeMvLMXntDHrFrhsSc3RVte1"
 
 MARKET_CAP_MIN = 500_000_000
-
 SCAN_INTERVAL  = 4 * 60 * 60
 
 CD_4H          = 14400
@@ -31,7 +31,7 @@ def send_telegram(msg):
     try:
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
     except Exception as e:
-        print(f"[Service2] Telegram error: {e}")
+        print(f"[S2] Telegram error: {e}")
 
 def on_cooldown(symbol, store, seconds):
     return symbol in store and time.time() - store[symbol] < seconds
@@ -48,14 +48,21 @@ def get_coins():
     while True:
         try:
             r = requests.get(
-                "https://api.coingecko.com/api/v3/coins/markets",
-                params={"vs_currency": "usd", "order": "market_cap_desc",
-                        "per_page": 250, "page": page, "sparkline": False},
+                "https://pro-api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": 250,
+                    "page": page,
+                    "sparkline": False,
+                    "x_cg_demo_api_key": COINGECKO_KEY
+                },
                 timeout=30
             )
             r.encoding = "utf-8"
             data = r.json()
             if not data or not isinstance(data, list):
+                print(f"[S2] CoinGecko empty response page {page}")
                 break
             found_below = False
             for coin in data:
@@ -71,9 +78,9 @@ def get_coins():
             page += 1
             time.sleep(2.0)
         except Exception as e:
-            print(f"[Service2] CoinGecko error: {e}")
+            print(f"[S2] CoinGecko error: {e}")
             break
-    return coins  # ✅ FIXED: was "continue"
+    return coins
 
 def get_ohlcv(symbol, interval, limit=100):
     for url in [
@@ -81,7 +88,11 @@ def get_ohlcv(symbol, interval, limit=100):
         "https://api.binance.com/api/v3/klines",
     ]:
         try:
-            r = requests.get(url, params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}, timeout=10)
+            r = requests.get(
+                url,
+                params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit},
+                timeout=10
+            )
             data = r.json()
             if not data or isinstance(data, dict):
                 continue
@@ -237,15 +248,15 @@ def run():
         "2. 4H EMA50 Wick + Close Reject\n"
         "3. Daily EMA 12/21 Cross\n"
         "────────────────────\n"
-        "💰 MC > $1B | Scan every 4H | No volume filter"
+        "💰 MC > $500M | Scan every 4H | No volume filter"
     )
     coins_scanned = 0
     while True:
         try:
-            print(f"\n[Service2] Scanning... {now_utc()} UTC")
+            print(f"\n[S2] Scanning... {now_utc()} UTC")
             coins         = get_coins()
             coins_scanned += len(coins)
-            print(f"[Service2] {len(coins)} coins loaded")
+            print(f"[S2] {len(coins)} coins loaded")
             for coin in coins:
                 symbol = coin["symbol"]
                 try:
@@ -257,14 +268,14 @@ def run():
                     if df_daily is not None:
                         check_daily_cross(symbol, coin, df_daily)
                 except Exception as e:
-                    print(f"[Service2] {symbol} error: {e}")
+                    print(f"[S2] {symbol} error: {e}")
                 time.sleep(0.3)
-            print(f"[Service2] Scan complete.")
+            print(f"[S2] Scan complete.")
             if time.time() - last_summary >= 86400:
                 send_daily_summary(coins_scanned)
                 coins_scanned = 0
         except Exception as e:
-            print(f"[Service2] Scan error: {e}")
+            print(f"[S2] Scan error: {e}")
         time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":

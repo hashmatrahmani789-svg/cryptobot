@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 BOT_TOKEN       = "8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg"
 CHAT_ID         = "8118939134"
 COINALYZE_KEY   = "71b88a8f-d87d-4be6-bebe-8bc2c3053073"
+COINGECKO_KEY   = "CG-YeMvLMXntDHrFrhsSc3RVte1"
 
 MARKET_CAP_MIN  = 500_000_000
 SCAN_INTERVAL   = 15 * 60
@@ -60,22 +61,27 @@ def mark(symbol, store):
 def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
-# ─── DATA FETCHERS ────────────────────────────────────────────────
-
 def get_coins():
     coins = []
     page  = 1
     while True:
         try:
             r = requests.get(
-                "https://api.coingecko.com/api/v3/coins/markets",
-                params={"vs_currency": "usd", "order": "market_cap_desc",
-                        "per_page": 250, "page": page, "sparkline": False},
+                "https://pro-api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": 250,
+                    "page": page,
+                    "sparkline": False,
+                    "x_cg_demo_api_key": COINGECKO_KEY
+                },
                 timeout=30
             )
             r.encoding = "utf-8"
             data = r.json()
             if not data or not isinstance(data, list):
+                print(f"[S1] CoinGecko empty response page {page}")
                 break
             found_below = False
             for coin in data:
@@ -208,8 +214,6 @@ def get_longshort_coinalyze(symbol):
         return long_pct, short_pct
     except Exception:
         return None, None
-
-# ─── SIGNAL CHECKS ────────────────────────────────────────────────
 
 def check_ema_cross_1h(symbol, coin, df):
     if on_cooldown(symbol, cd["ema_cross_1h"], CD_1H):
@@ -492,8 +496,6 @@ def check_longshort(symbol, coin):
         )
         mark(symbol, cd["longshort"])
         print(f"[S1] CROWDED SHORTS — {symbol}")
-
-# ─── MAIN ─────────────────────────────────────────────────────────
 
 def run():
     send_telegram(
