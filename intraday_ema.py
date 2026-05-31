@@ -74,7 +74,7 @@ def volume_above_ma(volumes: list, period: int = 20) -> bool:
         return False
     vol_ma = sum(volumes[-period-1:-1]) / period
     # TEMPORARY: lowered to 80% of MA to catch more signals
-  return volumes[-1] > vol_ma * 0.8
+          return volumes[-1] > vol_ma * 0.8 * 0.8 * 0.8
 
 def check_cross(closes: list):
     ema12 = calc_ema(closes, 12)
