@@ -22,7 +22,9 @@ def send_alert(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code != 200:
+            log.error(f"Telegram failed: {res.status_code} {res.text}")
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
@@ -88,8 +90,6 @@ def calc_ema(values: list, period: int) -> list:
     return ema
 
 # ── CHECK 50 EMA REJECTION ─────────────────────────────────────────────────
-# Bullish: candle low wicks below or touches 50 EMA, closes ABOVE it
-# Bearish: candle high wicks above or touches 50 EMA, closes BELOW it
 def check_rejection(candles: list):
     closes = [c["close"] for c in candles]
     ema50  = calc_ema(closes, 50)
@@ -107,24 +107,16 @@ def check_rejection(candles: list):
     # Wick tolerance: wick must touch within 0.5% of EMA
     touch_threshold = last_ema * 0.005
 
-    # Bullish rejection:
-    # - Previous candle closed below or near EMA (price was testing it)
-    # - Current candle low touches/pierces EMA
-    # - Current candle closes ABOVE EMA
     bullish = (
         candle_low <= last_ema + touch_threshold and
         candle_close > last_ema and
-        prev_close <= prev_ema * 1.01  # was at or below EMA before
+        prev_close <= prev_ema * 1.01
     )
 
-    # Bearish rejection:
-    # - Previous candle closed above or near EMA
-    # - Current candle high touches/pierces EMA
-    # - Current candle closes BELOW EMA
     bearish = (
         candle_high >= last_ema - touch_threshold and
         candle_close < last_ema and
-        prev_close >= prev_ema * 0.99  # was at or above EMA before
+        prev_close >= prev_ema * 0.99
     )
 
     if bullish:

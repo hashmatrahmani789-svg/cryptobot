@@ -13,16 +13,18 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── ENV VARS (set these in Railway) ────────────────────────────────────────
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-MIN_MARKET_CAP = 50_000_000  # $50M
+MIN_MARKET_CAP   = 50_000_000  # $50M
 
 # ── TELEGRAM ───────────────────────────────────────────────────────────────
 def send_alert(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code != 200:
+            log.error(f"Telegram failed: {res.status_code} {res.text}")
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
@@ -46,11 +48,10 @@ def get_coins_above_mcap():
                 break
             filtered = [c for c in data if c.get("market_cap", 0) >= MIN_MARKET_CAP]
             coins.extend(filtered)
-            # If last coin on page is below $50M, no need to go further
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
             page += 1
-            time.sleep(2)  # CoinGecko rate limit
+            time.sleep(2)
         except Exception as e:
             log.error(f"CoinGecko error: {e}")
             break
@@ -85,7 +86,6 @@ def check_cross(closes: list):
     ema12 = calc_ema(closes, 12)
     ema21 = calc_ema(closes, 21)
 
-    # Last two confirmed candles
     prev12, prev21 = ema12[-2], ema21[-2]
     curr12, curr21 = ema12[-1], ema21[-1]
 
@@ -108,7 +108,6 @@ def run_scan():
         closes = get_daily_closes(symbol_raw)
 
         if closes is None or len(closes) < 22:
-            # Try BTC pair as fallback
             symbol_btc = coin.get("symbol", "").upper() + "BTC"
             closes = get_daily_closes(symbol_btc)
             if closes is None or len(closes) < 22:
@@ -120,9 +119,8 @@ def run_scan():
         elif cross == "BEARISH":
             bearish_hits.append(coin.get("symbol", "").upper())
 
-        time.sleep(0.08)  # Binance rate limit safety
+        time.sleep(0.08)
 
-    # ── Send Alerts ────────────────────────────────────────────────────────
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     if bullish_hits:
@@ -152,12 +150,10 @@ def run_scan():
 
 # ── SCHEDULER: runs once per day at 00:05 UTC ─────────────────────────────
 def wait_until_next_scan():
+    from datetime import timedelta
     now = datetime.now(timezone.utc)
-    # Target: 00:05 UTC daily
-    target_hour, target_minute = 0, 5
-    next_run = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+    next_run = now.replace(hour=0, minute=5, second=0, microsecond=0)
     if now >= next_run:
-        from datetime import timedelta
         next_run += timedelta(days=1)
     sleep_seconds = (next_run - now).total_seconds()
     log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_seconds/3600:.1f}h")

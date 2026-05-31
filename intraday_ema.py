@@ -22,7 +22,9 @@ def send_alert(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code != 200:
+            log.error(f"Telegram failed: {res.status_code} {res.text}")
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
@@ -159,11 +161,9 @@ def run_scan():
     log.info("Scan complete.")
 
 # ── SCHEDULER ─────────────────────────────────────────────────────────────
-# Runs at the close of every 1H candle (every hour at :05)
 def wait_until_next_hour():
     from datetime import timedelta
     now = datetime.now(timezone.utc)
-    # Next candle close = next hour at :05
     next_run = now.replace(minute=5, second=0, microsecond=0)
     if now >= next_run:
         next_run += timedelta(hours=1)
