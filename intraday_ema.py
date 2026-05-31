@@ -4,7 +4,6 @@ import logging
 import requests
 from datetime import datetime, timezone
 
-# ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [INTRADAY-EMA] %(message)s",
@@ -12,12 +11,10 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── ENV VARS (set in Railway) ──────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-MIN_MARKET_CAP   = 500_000_000  # $500M
+MIN_MARKET_CAP   = 500_000_000
 
-# ── TELEGRAM ───────────────────────────────────────────────────────────────
 def send_alert(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
@@ -28,20 +25,13 @@ def send_alert(message: str):
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
-# ── COINGECKO: coins > $500M mcap ─────────────────────────────────────────
 def get_coins_above_mcap():
     coins = []
     page = 1
     while True:
         try:
             url = "https://api.coingecko.com/api/v3/coins/markets"
-            params = {
-                "vs_currency": "usd",
-                "order": "market_cap_desc",
-                "per_page": 250,
-                "page": page,
-                "sparkline": False
-            }
+            params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page, "sparkline": False}
             res = requests.get(url, params=params, timeout=15)
             data = res.json()
             if not data:
@@ -58,7 +48,6 @@ def get_coins_above_mcap():
     log.info(f"{len(coins)} coins loaded with mcap > $500M")
     return coins
 
-# ── BINANCE: get candles (close + volume) ─────────────────────────────────
 def get_candles(symbol: str, interval: str, limit: int = 30):
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -67,14 +56,12 @@ def get_candles(symbol: str, interval: str, limit: int = 30):
         data = res.json()
         if not isinstance(data, list) or len(data) < limit:
             return None, None
-        # Skip last candle (still open)
         closes  = [float(k[4]) for k in data[:-1]]
         volumes = [float(k[5]) for k in data[:-1]]
         return closes, volumes
     except Exception:
         return None, None
 
-# ── EMA ────────────────────────────────────────────────────────────────────
 def calc_ema(values: list, period: int) -> list:
     k = 2 / (period + 1)
     ema = [values[0]]
@@ -82,15 +69,12 @@ def calc_ema(values: list, period: int) -> list:
         ema.append(v * k + ema[-1] * (1 - k))
     return ema
 
-# ── VOLUME MA ──────────────────────────────────────────────────────────────
 def volume_above_ma(volumes: list, period: int = 20) -> bool:
     if len(volumes) < period + 1:
         return False
-    vol_ma = sum(volumes[-period-1:-1]) / period  # avg of last 20 closed candles
-    current_vol = volumes[-1]                      # last closed candle volume
-    return current_vol > vol_ma
+    vol_ma = sum(volumes[-period-1:-1]) / period
+    return volumes[-1] > vol_ma
 
-# ── CHECK CROSS ────────────────────────────────────────────────────────────
 def check_cross(closes: list):
     ema12 = calc_ema(closes, 12)
     ema21 = calc_ema(closes, 21)
@@ -102,19 +86,15 @@ def check_cross(closes: list):
         return "BEARISH"
     return None
 
-# ── SCAN ONE TIMEFRAME ─────────────────────────────────────────────────────
 def scan_timeframe(coins: list, interval: str, label: str):
     bullish = []
     bearish = []
-
     for coin in coins:
         symbol = coin.get("symbol", "").upper() + "USDT"
         closes, volumes = get_candles(symbol, interval, limit=30)
-
         if closes is None or len(closes) < 22:
             time.sleep(0.08)
             continue
-
         cross = check_cross(closes)
         if cross and volume_above_ma(volumes):
             name = coin.get("symbol", "").upper()
@@ -122,37 +102,18 @@ def scan_timeframe(coins: list, interval: str, label: str):
                 bullish.append(name)
             else:
                 bearish.append(name)
-
-        time.sleep(0.08)  # Binance rate limit
+        time.sleep(0.08)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
     if bullish:
-        msg = (
-            f"📈 <b>EMA 12/21 BULLISH CROSS [{label}]</b>\n"
-            f"🕐 {now}\n\n"
-            f"<b>Coins:</b> {', '.join(bullish)}\n\n"
-            f"✅ EMA 12 crossed <b>above</b> EMA 21\n"
-            f"📊 Volume above 20-period MA"
-        )
-        send_alert(msg)
+        send_alert(f"📈 <b>EMA 12/21 BULLISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bullish)}\n\n✅ EMA 12 crossed <b>above</b> EMA 21\n📊 Volume above 20-period MA")
         log.info(f"[{label}] Bullish: {bullish}")
-
     if bearish:
-        msg = (
-            f"📉 <b>EMA 12/21 BEARISH CROSS [{label}]</b>\n"
-            f"🕐 {now}\n\n"
-            f"<b>Coins:</b> {', '.join(bearish)}\n\n"
-            f"❌ EMA 12 crossed <b>below</b> EMA 21\n"
-            f"📊 Volume above 20-period MA"
-        )
-        send_alert(msg)
+        send_alert(f"📉 <b>EMA 12/21 BEARISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bearish)}\n\n❌ EMA 12 crossed <b>below</b> EMA 21\n📊 Volume above 20-period MA")
         log.info(f"[{label}] Bearish: {bearish}")
-
     if not bullish and not bearish:
         log.info(f"[{label}] No crosses with volume confirmation.")
 
-# ── MAIN SCAN ──────────────────────────────────────────────────────────────
 def run_scan():
     log.info(f"Scanning... {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     coins = get_coins_above_mcap()
@@ -160,7 +121,6 @@ def run_scan():
     scan_timeframe(coins, "4h", "4H")
     log.info("Scan complete.")
 
-# ── SCHEDULER ─────────────────────────────────────────────────────────────
 def wait_until_next_hour():
     from datetime import timedelta
     now = datetime.now(timezone.utc)
@@ -171,9 +131,9 @@ def wait_until_next_hour():
     log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
     time.sleep(sleep_secs)
 
-# ── ENTRY POINT ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     log.info("Intraday EMA 12/21 Cross Signal started.")
+    send_alert("✅ <b>INTRADAY-EMA Signal is live!</b>\nBot started and connected to Telegram successfully.")
     while True:
         wait_until_next_hour()
         run_scan()
