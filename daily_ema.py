@@ -121,7 +121,6 @@ def wait_until_next_scan():
 
 if __name__ == "__main__":
     log.info("EMA 12/21 Cross Signal started.")
-    send_alert("✅ <b>EMA-CROSS Daily Signal is live!</b>\nBot started and connected to Telegram successfully.")
     while True:
         wait_until_next_scan()
         run_scan()

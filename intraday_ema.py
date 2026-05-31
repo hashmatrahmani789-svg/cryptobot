@@ -133,7 +133,6 @@ def wait_until_next_hour():
 
 if __name__ == "__main__":
     log.info("Intraday EMA 12/21 Cross Signal started.")
-    send_alert("✅ <b>INTRADAY-EMA Signal is live!</b>\nBot started and connected to Telegram successfully.")
     while True:
         wait_until_next_hour()
         run_scan()
