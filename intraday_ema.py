@@ -56,6 +56,7 @@ def get_candles(symbol: str, interval: str, limit: int = 30):
         data = res.json()
         if not isinstance(data, list) or len(data) < limit:
             return None, None
+        # Exclude last candle (unclosed)
         closes  = [float(k[4]) for k in data[:-1]]
         volumes = [float(k[5]) for k in data[:-1]]
         return closes, volumes
@@ -70,11 +71,11 @@ def calc_ema(values: list, period: int) -> list:
     return ema
 
 def volume_above_ma(volumes: list, period: int = 20) -> bool:
+    # FIXED: restored correct indentation and proper 100% MA threshold
     if len(volumes) < period + 1:
         return False
     vol_ma = sum(volumes[-period-1:-1]) / period
-    # TEMPORARY: lowered to 80% of MA to catch more signals
-          return volumes[-1] > vol_ma * 0.8 * 0.8 * 0.8
+    return volumes[-1] > vol_ma * 1.0
 
 def check_cross(closes: list):
     ema12 = calc_ema(closes, 12)
@@ -107,10 +108,10 @@ def scan_timeframe(coins: list, interval: str, label: str):
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if bullish:
-        send_alert(f"📈 <b>EMA 12/21 BULLISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bullish)}\n\n✅ EMA 12 crossed <b>above</b> EMA 21\n📊 Volume above 80% of 20-period MA")
+        send_alert(f"📈 <b>EMA 12/21 BULLISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bullish)}\n\n✅ EMA 12 crossed <b>above</b> EMA 21\n📊 Volume confirmed above 20-period MA")
         log.info(f"[{label}] Bullish: {bullish}")
     if bearish:
-        send_alert(f"📉 <b>EMA 12/21 BEARISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bearish)}\n\n❌ EMA 12 crossed <b>below</b> EMA 21\n📊 Volume above 80% of 20-period MA")
+        send_alert(f"📉 <b>EMA 12/21 BEARISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bearish)}\n\n❌ EMA 12 crossed <b>below</b> EMA 21\n📊 Volume confirmed above 20-period MA")
         log.info(f"[{label}] Bearish: {bearish}")
     if not bullish and not bearish:
         log.info(f"[{label}] No crosses with volume confirmation.")

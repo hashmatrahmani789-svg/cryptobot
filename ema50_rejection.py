@@ -56,6 +56,7 @@ def get_candles(symbol: str, interval: str, limit: int = 60):
         data = res.json()
         if not isinstance(data, list) or len(data) < limit:
             return None
+        # Exclude last candle (unclosed)
         candles = [{"open": float(k[1]), "high": float(k[2]), "low": float(k[3]), "close": float(k[4])} for k in data[:-1]]
         return candles
     except Exception:
@@ -69,18 +70,22 @@ def calc_ema(values: list, period: int) -> list:
     return ema
 
 def check_rejection(candles: list):
-    closes = [c["close"] for c in candles]
-    ema50  = calc_ema(closes, 50)
-    last         = candles[-1]
-    last_ema     = ema50[-1]
-    prev_close   = candles[-2]["close"]
-    prev_ema     = ema50[-2]
-    candle_low   = last["low"]
-    candle_high  = last["high"]
+    closes      = [c["close"] for c in candles]
+    ema50       = calc_ema(closes, 50)
+    last        = candles[-1]
+    last_ema    = ema50[-1]
+    candle_low  = last["low"]
+    candle_high = last["high"]
     candle_close = last["close"]
+
+    # 0.5% touch threshold — wick just needs to reach within 0.5% of EMA50
     touch_threshold = last_ema * 0.005
-    bullish = (candle_low <= last_ema + touch_threshold and candle_close > last_ema and prev_close <= prev_ema * 1.01)
-    bearish = (candle_high >= last_ema - touch_threshold and candle_close < last_ema and prev_close >= prev_ema * 0.99)
+
+    # FIXED: removed prev_close conditions — they were filtering out
+    # all legitimate setups where price approaches EMA from above/below
+    bullish = (candle_low <= last_ema + touch_threshold and candle_close > last_ema)
+    bearish = (candle_high >= last_ema - touch_threshold and candle_close < last_ema)
+
     if bullish:
         return "BULLISH", last_ema, candle_close
     if bearish:
