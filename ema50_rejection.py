@@ -11,8 +11,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN   = os.getenv("8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg")
+TELEGRAM_CHAT_ID = os.getenv("8118939134")
 MIN_MARKET_CAP   = 500_000_000
 
 def send_alert(message: str):
@@ -120,14 +120,13 @@ def scan_timeframe(coins: list, interval: str, label: str):
         log.info(f"[{label}] Bearish rejections: {[x[0] for x in bearish]}")
     if not bullish and not bearish:
         log.info(f"[{label}] No rejections found.")
-
 def run_scan():
     log.info(f"Scanning... {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     coins = get_coins_above_mcap()
     scan_timeframe(coins, "1h", "1H")
     scan_timeframe(coins, "4h", "4H")
     log.info("Scan complete.")
-
+    send_alert("DEBUG: EMA50 scan ran successfully")
 def wait_until_next_hour():
     from datetime import timedelta
     now = datetime.now(timezone.utc)
