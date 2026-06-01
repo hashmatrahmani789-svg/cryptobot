@@ -11,8 +11,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = os.getenv("8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg")
-TELEGRAM_CHAT_ID = os.getenv("8118939134")
+TELEGRAM_TOKEN   = "8804397449:AAG63Y6TGO3PninJad7CjIf_XWS_qtLpmpY"
+TELEGRAM_CHAT_ID = "8118939134"
 MIN_MARKET_CAP   = 200_000_000
 
 def send_alert(message: str):
