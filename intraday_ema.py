@@ -11,8 +11,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN   = os.getenv("8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg")
+TELEGRAM_CHAT_ID = os.getenv("8118939134")
 MIN_MARKET_CAP   = 500_000_000
 
 def send_alert(message: str):
@@ -126,9 +126,7 @@ def run_scan():
 def wait_until_next_hour():
     from datetime import timedelta
     now = datetime.now(timezone.utc)
-    next_run = now.replace(minute=5, second=0, microsecond=0)
-    if now >= next_run:
-        next_run += timedelta(hours=1)
+    next_run = now + timedelta(minutes=2)
     sleep_secs = (next_run - now).total_seconds()
     log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
     time.sleep(sleep_secs)
