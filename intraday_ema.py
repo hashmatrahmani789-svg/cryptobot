@@ -143,6 +143,7 @@ def wait_until_next_scan():
 
 if __name__ == "__main__":
     log.info("Intraday EMA 12/21 Cross Signal started.")
+    send_alert("✅ Intraday EMA bot started and running!")
     while True:
         wait_until_next_scan()
         run_scan()
