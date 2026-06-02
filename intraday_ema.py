@@ -11,7 +11,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = os.getenv("8611090872:AAH5ztW9MMovKNAXZ2RyCzbJANysvrSefHk")
+TELEGRAM_TOKEN   = os.getenv("8979159570:AAEQmcziFssisIuOmvggMZ17QTtBPC4HEqg")
 TELEGRAM_CHAT_ID = os.getenv("8118939134")
 MIN_MARKET_CAP   = 200_000_000
 
