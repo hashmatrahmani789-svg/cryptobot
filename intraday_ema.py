@@ -84,6 +84,18 @@ def volume_above_ma(volumes: list, period: int = 20) -> bool:
     vol_ma = sum(volumes[-period-1:-1]) / period
     return volumes[-1] > vol_ma
 
+def check_cross_lookback(closes: list, lookback: int = CROSS_LOOKBACK):
+    ema12 = calc_ema(closes, 12)
+    ema21 = calc_ema(closes, 21)
+    for i in range(-lookback, 0):
+        prev12, prev21 = ema12[i-1], ema21[i-1]
+        curr12, curr21 = ema12[i], ema21[i]
+        if prev12 <= prev21 and curr12 > curr21:
+            return "BULLISH"
+        if prev12 >= prev21 and curr12 < curr21:
+            return "BEARISH"
+    return None
+
 def scan_timeframe(coins: list, interval: str, label: str):
     bullish = []
     bearish = []
@@ -110,34 +122,9 @@ def scan_timeframe(coins: list, interval: str, label: str):
     if bearish:
         lines.append(f"\n📉 <b>BEARISH</b> (within 3 candles):\n{', '.join(bearish)}")
     if not bullish and not bearish:
-        return  # no cross = no message
+        return
 
     send_alert("\n".join(lines))
-    e
-        symbol = coin.get("symbol", "").upper() + "USDT"
-        closes, volumes = get_candles(symbol, interval, limit=50)
-        if closes is None or len(closes) < 22:
-            time.sleep(0.08)
-            continue
-        cross = check_cross_lookback(closes)
-        if cross and volume_above_ma(volumes):
-            name = coin.get("symbol", "").upper()
-            if cross == "BULLISH":
-                bullish.append(name)
-            else:
-                bearish.append(name)
-        time.sleep(0.08)
-
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    if bullish:
-        send_alert(f"📈 <b>EMA 12/21 BULLISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bullish)}\n\n✅ EMA 12 crossed <b>above</b> EMA 21 (within 3 candles)\n📊 Volume confirmed above 20-period MA")
-        log.info(f"[{label}] Bullish: {bullish}")
-    if bearish:
-        send_alert(f"📉 <b>EMA 12/21 BEARISH CROSS [{label}]</b>\n🕐 {now}\n\n<b>Coins:</b> {', '.join(bearish)}\n\n❌ EMA 12 crossed <b>below</b> EMA 21 (within 3 candles)\n📊 Volume confirmed above 20-period MA")
-        log.info(f"[{label}] Bearish: {bearish}")
-    if not bullish and not bearish:
-        log.info(f"[{label}] No crosses found.")
-        send_alert(f"🔍 INTRADAY EMA [{label}] — no crosses found at {now}")
 
 def run_scan():
     log.info(f"Scanning... {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
