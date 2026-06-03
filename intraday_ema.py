@@ -10,8 +10,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = "8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4"
-TELEGRAM_CHAT_ID = "8118939134"
+TELEGRAM_TOKEN   = os.environ.get("8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4", "")
+TELEGRAM_CHAT_ID = os.environ.get("8118939134", "")
 MIN_MARKET_CAP   = 200_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
