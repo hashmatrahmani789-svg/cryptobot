@@ -15,11 +15,34 @@ log = logging.getLogger(__name__)
 # =========================
 TELEGRAM_TOKEN   = "8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4"
 TELEGRAM_CHAT_ID = "8118939134"
-MIN_VOLUME_24H   = 10_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
 VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 6
+
+# Top 100 USDT pairs by volume — fallback if exchangeInfo fails
+TOP_PAIRS = [
+    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
+    "DOGEUSDT","ADAUSDT","AVAXUSDT","SHIBUSDT","DOTUSDT",
+    "LINKUSDT","LTCUSDT","BCHUSDT","UNIUSDT","ATOMUSDT",
+    "XLMUSDT","ETCUSDT","FILUSDT","APTUSDT","ARBUSDT",
+    "OPUSDT","INJUSDT","SUIUSDT","SEIUSDT","TIAUSDT",
+    "ORDIUSDT","WLDUSDT","STXUSDT","RNDRUSDT","FETUSDT",
+    "AGIXUSDT","OCEANUSDT","GRTUSDT","AAVEUSDT","MKRUSDT",
+    "SNXUSDT","COMPUSDT","CRVUSDT","LDOUSDT","RPLUSDT",
+    "FTMUSDT","NEARUSDT","ALGOUSDT","ICPUSDT","EGLDUSDT",
+    "FLOWUSDT","AXSUSDT","SANDUSDT","MANAUSDT","GALAUSDT",
+    "APEUSDT","GMTUSDT","MASKUSDT","WOOUSDT","BLURUSDT",
+    "MAGICUSDT","GMXUSDT","PERPUSDT","DYDXUSDT","RUNEUSDT",
+    "KAVAUSDT","BANDUSDT","ZILUSDT","IOTAUSDT","ONTUSDT",
+    "VETUSDT","HBARUSDT","QNTUSDT","EOSUSDT","XTZUSDT",
+    "THETAUSDT","KLAYUSDT","CHZUSDT","ENJUSDT","BATUSDT",
+    "ZRXUSDT","STORJUSDT","CTKUSDT","CKBUSDT","NKNUSDT",
+    "CELOUSDT","SKLUSDT","COTIUSDT","STMXUSDT","TUSDT",
+    "FLMUSDT","SRMUSDT","RAYUSDT","ORCAUSDT","MNGOUSUSDT",
+    "SOLUSDT","JUPUSDT","WIFUSDT","BONKUSDT","MEMEUSDT",
+    "PEPEUSDT","FLOKIUSDT","1000SHIBUSDT","CFXUSDT","AMBUSDT"
+]
 
 # =========================
 # TELEGRAM
@@ -39,34 +62,27 @@ def send_alert(message):
         log.error(f"Telegram exception: {e}")
 
 # =========================
-# GET ACTIVE BINANCE PAIRS
+# GET PAIRS FROM EXCHANGE INFO
 # =========================
 def get_active_pairs():
     try:
         r = requests.get(
-            "https://api.binance.com/api/v3/ticker/24hr",
-            timeout=30
+            "https://api.binance.com/api/v3/exchangeInfo",
+            timeout=20
         )
         data = r.json()
-        if not isinstance(data, list):
-            log.error(f"Binance ticker failed: {data}")
-            return []
         pairs = []
-        for coin in data:
-            symbol = coin.get("symbol", "")
-            if not symbol.endswith("USDT"):
-                continue
-            try:
-                volume = float(coin.get("quoteVolume", 0))
-            except:
-                continue
-            if volume >= MIN_VOLUME_24H:
-                pairs.append(symbol)
-        log.info(f"{len(pairs)} active pairs with >$10M volume")
+        for s in data.get("symbols", []):
+            if (
+                s.get("quoteAsset") == "USDT"
+                and s.get("status") == "TRADING"
+            ):
+                pairs.append(s["symbol"])
+        log.info(f"{len(pairs)} USDT pairs loaded from exchangeInfo")
         return pairs
     except Exception as e:
-        log.error(f"Failed loading Binance pairs: {e}")
-        return []
+        log.error(f"exchangeInfo failed: {e} — using fallback list")
+        return TOP_PAIRS
 
 # =========================
 # GET CANDLES
@@ -162,9 +178,6 @@ def scan_timeframe(symbols, interval, label):
 def run_scan():
     log.info(f"Scanning... {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     symbols = get_active_pairs()
-    if not symbols:
-        send_alert("⚠️ Failed to load Binance pairs — retrying next hour")
-        return
     scan_timeframe(symbols, "1h", "1H")
     scan_timeframe(symbols, "4h", "4H")
     log.info("Scan complete.")
