@@ -60,11 +60,8 @@ def send_alert(message):
 # =========================
 # BINANCE PAIRS
 # =========================
-
 def get_active_pairs():
-
     try:
-
         r = requests.get(
             "https://api.binance.com/api/v3/ticker/24hr",
             timeout=20
@@ -72,13 +69,17 @@ def get_active_pairs():
 
         data = r.json()
 
+        if not isinstance(data, list):
+            log.error(f"Binance response: {data}")
+            return []
+
         pairs = []
 
         for coin in data:
 
-            symbol = coin.get("symbol", "")
+            symbol = coin.get("symbol")
 
-            if not symbol.endswith("USDT"):
+            if not symbol or not symbol.endswith("USDT"):
                 continue
 
             try:
@@ -91,26 +92,13 @@ def get_active_pairs():
             if quote_volume >= MIN_DAILY_VOLUME:
                 pairs.append(symbol)
 
-        log.info(
-            f"{len(pairs)} pairs with "
-            f"24h volume > ${MIN_DAILY_VOLUME:,.0f}"
-        )
+        log.info(f"{len(pairs)} active pairs found")
 
         return pairs
 
     except Exception as e:
-
-        log.error(
-            f"Failed loading Binance pairs: {e}"
-        )
-
+        log.error(f"Failed loading Binance pairs: {e}")
         return []
-
-# =========================
-# CANDLES
-# =========================
-
-def get_candles(
     symbol,
     interval,
     limit=100
