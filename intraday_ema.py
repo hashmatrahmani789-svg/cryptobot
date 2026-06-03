@@ -45,11 +45,11 @@ def get_active_pairs():
     try:
         r = requests.get(
             "https://api.binance.com/api/v3/ticker/24hr",
-            timeout=20
+            timeout=30
         )
         data = r.json()
         if not isinstance(data, list):
-            log.error("Binance ticker failed.")
+            log.error(f"Binance ticker failed: {data}")
             return []
         pairs = []
         for coin in data:
@@ -162,6 +162,9 @@ def scan_timeframe(symbols, interval, label):
 def run_scan():
     log.info(f"Scanning... {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     symbols = get_active_pairs()
+    if not symbols:
+        send_alert("⚠️ Failed to load Binance pairs — retrying next hour")
+        return
     scan_timeframe(symbols, "1h", "1H")
     scan_timeframe(symbols, "4h", "4H")
     log.info("Scan complete.")
