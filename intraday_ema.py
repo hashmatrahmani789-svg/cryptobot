@@ -11,8 +11,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.getenv("8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4")
+TELEGRAM_CHAT_ID = os.getenv("8118939134")
 
 MIN_MARKET_CAP = 200_000_000
 CROSS_LOOKBACK = 6
@@ -291,10 +291,10 @@ def wait_until_next_scan():
 
 
 if __name__ == "__main__":
-
     log.info("Intraday EMA Scanner started.")
-
     send_alert("✅ EMA bot online")
+
+    run_scan()  # run immediately after startup
 
     while True:
         wait_until_next_scan()
