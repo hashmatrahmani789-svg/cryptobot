@@ -18,6 +18,7 @@ MIN_MARKET_CAP = 200_000_000
 CROSS_LOOKBACK = 6
 USE_VOLUME_FILTER = False
 
+
 def send_alert(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log.error("Telegram credentials missing.")
@@ -37,17 +38,44 @@ def send_alert(message):
         if r.status_code == 200:
             log.info("Telegram alert sent.")
         else:
-            log.error(f"Telegram failed: {r.status_code} {r.text}")
+            log.error(f"Telegram failed: {r.status_code}")
 
     except Exception as e:
-        log.error(f"Telegram exception: {e}")
+        log.error(f"Telegram error: {e}")
 
-def get_coins_above_mcap():
+
+def get_binance_pairs():
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/exchangeInfo",
+            timeout=20
+        )
+
+        data = r.json()
+
+        pairs = {
+            s["symbol"]
+            for s in data["symbols"]
+            if s["status"] == "TRADING"
+            and s["quoteAsset"] == "USDT"
+        }
+
+        log.info(f"{len(pairs)} Binance pairs loaded")
+        return pairs
+
+    except Exception as e:
+        log.error(f"Binance pair load error: {e}")
+        return set()
+
+
+def get_coins_above_mcap(valid_pairs):
     coins = []
     page = 1
 
     while True:
+
         try:
+
             r = requests.get(
                 "https://api.coingecko.com/api/v3/coins/markets",
                 params={
@@ -65,12 +93,15 @@ def get_coins_above_mcap():
             if not data:
                 break
 
-            filtered = [
-                c for c in data
-                if c.get("market_cap", 0) >= MIN_MARKET_CAP
-            ]
+            for coin in data:
 
-            coins.extend(filtered)
+                if coin.get("market_cap", 0) < MIN_MARKET_CAP:
+                    continue
+
+                symbol = coin["symbol"].upper() + "USDT"
+
+                if symbol in valid_pairs:
+                    coins.append(symbol)
 
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
@@ -82,11 +113,15 @@ def get_coins_above_mcap():
             log.error(f"CoinGecko error: {e}")
             break
 
-    log.info(f"{len(coins)} coins loaded with mcap > $200M")
-    return coins
+    log.info(f"{len(coins)} valid Binance pairs above $200M mcap")
+
+    return list(set(coins))
+
 
 def get_candles(symbol, interval, limit=100):
+
     try:
+
         r = requests.get(
             "https://api.binance.com/api/v3/klines",
             params={
@@ -102,18 +137,17 @@ def get_candles(symbol, interval, limit=100):
         if not isinstance(data, list):
             return None, None
 
-        if len(data) < 30:
-            return None, None
-
         closes = [float(x[4]) for x in data[:-1]]
         volumes = [float(x[5]) for x in data[:-1]]
 
         return closes, volumes
 
-    except Exception:
+    except:
         return None, None
 
+
 def calc_ema(values, period):
+
     k = 2 / (period + 1)
 
     ema = [values[0]]
@@ -123,7 +157,9 @@ def calc_ema(values, period):
 
     return ema
 
+
 def volume_above_ma(volumes, period=20):
+
     if len(volumes) < period + 1:
         return False
 
@@ -131,11 +167,13 @@ def volume_above_ma(volumes, period=20):
 
     return volumes[-1] > avg
 
-def check_cross(closes, lookback=CROSS_LOOKBACK):
+
+def check_cross(closes):
+
     ema12 = calc_ema(closes, 12)
     ema21 = calc_ema(closes, 21)
 
-    for i in range(-lookback, 0):
+    for i in range(-CROSS_LOOKBACK, 0):
 
         prev12 = ema12[i - 1]
         prev21 = ema21[i - 1]
@@ -151,19 +189,17 @@ def check_cross(closes, lookback=CROSS_LOOKBACK):
 
     return None
 
-def scan_timeframe(coins, interval, label):
+
+def scan_timeframe(symbols, interval, label):
 
     bullish = []
     bearish = []
 
-    for coin in coins:
-
-        symbol = coin["symbol"].upper() + "USDT"
+    for symbol in symbols:
 
         closes, volumes = get_candles(symbol, interval)
 
-        if closes is None:
-            log.info(f"{symbol} unavailable on Binance")
+        if closes is None or len(closes) < 30:
             continue
 
         cross = check_cross(closes)
@@ -182,9 +218,9 @@ def scan_timeframe(coins, interval, label):
             continue
 
         if cross == "BULLISH":
-            bullish.append(symbol)
+            bullish.append(symbol.replace("USDT", ""))
         else:
-            bearish.append(symbol)
+            bearish.append(symbol.replace("USDT", ""))
 
         time.sleep(0.05)
 
@@ -194,24 +230,25 @@ def scan_timeframe(coins, interval, label):
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    msg = [
+    message = [
         f"📊 <b>EMA 12/21 [{label}]</b>",
         f"🕐 {now}"
     ]
 
     if bullish:
-        msg.append(
+        message.append(
             "\n📈 <b>BULLISH</b>\n" +
             ", ".join(bullish)
         )
 
     if bearish:
-        msg.append(
+        message.append(
             "\n📉 <b>BEARISH</b>\n" +
             ", ".join(bearish)
         )
 
-    send_alert("\n".join(msg))
+    send_alert("\n".join(message))
+
 
 def run_scan():
 
@@ -220,12 +257,15 @@ def run_scan():
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     )
 
-    coins = get_coins_above_mcap()
+    valid_pairs = get_binance_pairs()
 
-    scan_timeframe(coins, "1h", "1H")
-    scan_timeframe(coins, "4h", "4H")
+    symbols = get_coins_above_mcap(valid_pairs)
+
+    scan_timeframe(symbols, "1h", "1H")
+    scan_timeframe(symbols, "4h", "4H")
 
     log.info("Scan complete.")
+
 
 def wait_until_next_scan():
 
@@ -244,11 +284,11 @@ def wait_until_next_scan():
 
     log.info(
         f"Next scan at "
-        f"{next_run.strftime('%Y-%m-%d %H:%M UTC')} "
-        f"- sleeping {sleep_seconds / 60:.1f}m"
+        f"{next_run.strftime('%Y-%m-%d %H:%M UTC')}"
     )
 
     time.sleep(sleep_seconds)
+
 
 if __name__ == "__main__":
 
