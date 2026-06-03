@@ -12,8 +12,8 @@ log = logging.getLogger(__name__)
 
 import os
 
-TELEGRAM_TOKEN   = os.environ.get("8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4", "")
-TELEGRAM_CHAT_ID = os.environ.get("8118939134", "")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MIN_MARKET_CAP   = 200_000_000
 EMA_PERIOD       = 50
 SCAN_INTERVAL_M  = 15  # scan every 15 minutes
