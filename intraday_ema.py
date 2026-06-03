@@ -16,9 +16,8 @@ log = logging.getLogger(__name__)
 # CONFIG
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4")
-TELEGRAM_CHAT_ID = os.getenv("8118939134")
-
+TELEGRAM_TOKEN = "8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4"
+TELEGRAM_CHAT_ID = "8118939134"
 MIN_DAILY_VOLUME = 10_000_000  # $10M
 CROSS_LOOKBACK = 6
 EMA_FAST = 12
