@@ -10,9 +10,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# =========================
-# CONFIG
-# =========================
 TELEGRAM_TOKEN   = "8730830984:AAGMpHQqsco1ZCfiADjgRN18zSrwjMpfAS4"
 TELEGRAM_CHAT_ID = "8118939134"
 EMA_FAST         = 12
@@ -20,8 +17,7 @@ EMA_SLOW         = 21
 VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 6
 
-# Top 100 USDT pairs by volume — fallback if exchangeInfo fails
-TOP_PAIRS = [
+PAIRS = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
     "DOGEUSDT","ADAUSDT","AVAXUSDT","SHIBUSDT","DOTUSDT",
     "LINKUSDT","LTCUSDT","BCHUSDT","UNIUSDT","ATOMUSDT",
@@ -29,24 +25,21 @@ TOP_PAIRS = [
     "OPUSDT","INJUSDT","SUIUSDT","SEIUSDT","TIAUSDT",
     "ORDIUSDT","WLDUSDT","STXUSDT","RNDRUSDT","FETUSDT",
     "AGIXUSDT","OCEANUSDT","GRTUSDT","AAVEUSDT","MKRUSDT",
-    "SNXUSDT","COMPUSDT","CRVUSDT","LDOUSDT","RPLUSDT",
-    "FTMUSDT","NEARUSDT","ALGOUSDT","ICPUSDT","EGLDUSDT",
-    "FLOWUSDT","AXSUSDT","SANDUSDT","MANAUSDT","GALAUSDT",
-    "APEUSDT","GMTUSDT","MASKUSDT","WOOUSDT","BLURUSDT",
-    "MAGICUSDT","GMXUSDT","PERPUSDT","DYDXUSDT","RUNEUSDT",
-    "KAVAUSDT","BANDUSDT","ZILUSDT","IOTAUSDT","ONTUSDT",
-    "VETUSDT","HBARUSDT","QNTUSDT","EOSUSDT","XTZUSDT",
-    "THETAUSDT","KLAYUSDT","CHZUSDT","ENJUSDT","BATUSDT",
-    "ZRXUSDT","STORJUSDT","CTKUSDT","CKBUSDT","NKNUSDT",
-    "CELOUSDT","SKLUSDT","COTIUSDT","STMXUSDT","TUSDT",
-    "FLMUSDT","SRMUSDT","RAYUSDT","ORCAUSDT","MNGOUSUSDT",
-    "SOLUSDT","JUPUSDT","WIFUSDT","BONKUSDT","MEMEUSDT",
-    "PEPEUSDT","FLOKIUSDT","1000SHIBUSDT","CFXUSDT","AMBUSDT"
+    "SNXUSDT","COMPUSDT","CRVUSDT","LDOUSDT","FTMUSDT",
+    "NEARUSDT","ALGOUSDT","ICPUSDT","EGLDUSDT","FLOWUSDT",
+    "AXSUSDT","SANDUSDT","MANAUSDT","GALAUSDT","APEUSDT",
+    "GMTUSDT","MASKUSDT","WOOUSDT","BLURUSDT","GMXUSDT",
+    "DYDXUSDT","RUNEUSDT","KAVAUSDT","ZILUSDT","VETUSDT",
+    "HBARUSDT","QNTUSDT","EOSUSDT","XTZUSDT","THETAUSDT",
+    "CHZUSDT","ENJUSDT","BATUSDT","ZRXUSDT","STORJUSDT",
+    "RAYUSDT","JUPUSDT","WIFUSDT","BONKUSDT","PEPEUSDT",
+    "FLOKIUSDT","1000SHIBUSDT","CFXUSDT","ONTUSDT","CELOUSDT",
+    "SKLUSDT","BANDUSDT","MAGICUSDT","PERPUSDT","COTIUSDT",
+    "KLAYUSDT","AMBUSDT","CTKUSDT","NKNUSDT","STMXUSDT",
+    "MEMEUSDT","WUSDT","NOTUSDT","TURBOUSDT","BOMEUSDT",
+    "ENAUSDT","EIGENUSDT","SCRUSDT","ZROUSDT","1000PEPEUSDT"
 ]
 
-# =========================
-# TELEGRAM
-# =========================
 def send_alert(message):
     try:
         r = requests.post(
@@ -61,32 +54,6 @@ def send_alert(message):
     except Exception as e:
         log.error(f"Telegram exception: {e}")
 
-# =========================
-# GET PAIRS FROM EXCHANGE INFO
-# =========================
-def get_active_pairs():
-    try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/exchangeInfo",
-            timeout=20
-        )
-        data = r.json()
-        pairs = []
-        for s in data.get("symbols", []):
-            if (
-                s.get("quoteAsset") == "USDT"
-                and s.get("status") == "TRADING"
-            ):
-                pairs.append(s["symbol"])
-        log.info(f"{len(pairs)} USDT pairs loaded from exchangeInfo")
-        return pairs
-    except Exception as e:
-        log.error(f"exchangeInfo failed: {e} — using fallback list")
-        return TOP_PAIRS
-
-# =========================
-# GET CANDLES
-# =========================
 def get_candles(symbol, interval, limit=100):
     try:
         r = requests.get(
@@ -103,9 +70,6 @@ def get_candles(symbol, interval, limit=100):
     except:
         return None, None
 
-# =========================
-# EMA
-# =========================
 def calc_ema(values, period):
     k = 2 / (period + 1)
     ema = [values[0]]
@@ -113,18 +77,12 @@ def calc_ema(values, period):
         ema.append(v * k + ema[-1] * (1 - k))
     return ema
 
-# =========================
-# VOLUME FILTER
-# =========================
 def volume_above_ma(volumes, period=VOLUME_MA_PERIOD):
     if len(volumes) < period + 1:
         return False
     vol_ma = sum(volumes[-period-1:-1]) / period
     return volumes[-1] > vol_ma
 
-# =========================
-# EMA CROSS CHECK
-# =========================
 def check_cross(closes, lookback=CROSS_LOOKBACK):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
@@ -137,13 +95,10 @@ def check_cross(closes, lookback=CROSS_LOOKBACK):
             return "BEARISH"
     return None
 
-# =========================
-# SCAN TIMEFRAME
-# =========================
-def scan_timeframe(symbols, interval, label):
+def scan_timeframe(interval, label):
     bullish = []
     bearish = []
-    for symbol in symbols:
+    for symbol in PAIRS:
         closes, volumes = get_candles(symbol, interval)
         if closes is None:
             continue
@@ -162,7 +117,7 @@ def scan_timeframe(symbols, interval, label):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if not bullish and not bearish:
         log.info(f"[{label}] No signals found.")
-        send_alert(f"🔍 EMA scan [{label}] complete — no crosses found\n🕐 {now}")
+        send_alert(f"🔍 EMA scan [{label}] — no crosses found\n🕐 {now}")
         return
 
     msg = [f"📊 <b>EMA 12/21 [{label}]</b>", f"🕐 {now}"]
@@ -172,19 +127,13 @@ def scan_timeframe(symbols, interval, label):
         msg.append("\n📉 <b>BEARISH</b>\n" + "\n".join(bearish))
     send_alert("\n".join(msg))
 
-# =========================
-# MAIN SCAN
-# =========================
 def run_scan():
     log.info(f"Scanning... {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    symbols = get_active_pairs()
-    scan_timeframe(symbols, "1h", "1H")
-    scan_timeframe(symbols, "4h", "4H")
+    log.info(f"Scanning {len(PAIRS)} pairs")
+    scan_timeframe("1h", "1H")
+    scan_timeframe("4h", "4H")
     log.info("Scan complete.")
 
-# =========================
-# HOURLY TIMER
-# =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
     next_run = now.replace(minute=5, second=0, microsecond=0)
@@ -194,9 +143,6 @@ def wait_until_next_scan():
     log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
     time.sleep(sleep_secs)
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     log.info("Intraday EMA Scanner started.")
     send_alert("✅ EMA Scanner Online")
