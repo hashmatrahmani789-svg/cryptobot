@@ -16,7 +16,10 @@ TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
 MIN_MARKET_CAP    = 200_000_000
 EMA_PERIOD        = 50
-SCAN_INTERVAL_M   = 60  # scan every hour (15m can be added later)
+COIN_CACHE_HOURS  = 24
+
+_coin_cache      = {}
+_coin_cache_time = None
 
 
 # =========================
@@ -38,9 +41,19 @@ def send_alert(message):
 
 
 # =========================
-# COINGECKO — GET COINS ABOVE $200M MCAP
+# COINGECKO — CACHED COIN LIST
+# refreshes once every 24 hours
 # =========================
 def get_coins():
+    global _coin_cache, _coin_cache_time
+    now = datetime.now(timezone.utc)
+
+    if _coin_cache and _coin_cache_time:
+        age_hours = (now - _coin_cache_time).total_seconds() / 3600
+        if age_hours < COIN_CACHE_HOURS:
+            log.info(f"{len(_coin_cache)} coins from cache")
+            return _coin_cache
+
     coins = {}
     page = 1
     while True:
@@ -80,7 +93,10 @@ def get_coins():
         except Exception as e:
             log.error(f"CoinGecko error: {e}")
             break
-    log.info(f"{len(coins)} coins loaded from CoinGecko")
+
+    _coin_cache = coins
+    _coin_cache_time = now
+    log.info(f"{len(coins)} coins fetched from CoinGecko")
     return coins
 
 
@@ -109,7 +125,7 @@ def get_candles(ticker, interval):
         if not candles or len(candles) < 60:
             return None
 
-        candles = list(reversed(candles))[:-1]  # oldest first, exclude live candle
+        candles = list(reversed(candles))[:-1]
 
         return [
             {
@@ -141,24 +157,17 @@ def calc_ema(values, period):
 # SIGNAL LOGIC
 # Step 1 — 4H candle touches the 50 EMA (wick or body)
 # Step 2 — 1H candle closes above (bullish) or below (bearish) the 50 EMA
-# Both must be true for an alert
 # =========================
 def check_4h_touch(candles_4h, ema_4h):
-    """Check if last closed 4H candle touched the 50 EMA"""
-    c = candles_4h[-1]
-    e = ema_4h[-1]
-    tol = e * 0.003  # 0.3% tolerance
-
-    # wick touched or body touched EMA
-    touched = c["low"] <= e + tol and c["high"] >= e - tol
-    return touched
+    c   = candles_4h[-1]
+    e   = ema_4h[-1]
+    tol = e * 0.003
+    return c["low"] <= e + tol and c["high"] >= e - tol
 
 
 def check_1h_confirmation(candles_1h, ema_1h):
-    """Check if last closed 1H candle closed above or below 50 EMA"""
     c = candles_1h[-1]
     e = ema_1h[-1]
-
     if c["close"] > e:
         return "BULLISH"
     if c["close"] < e:
@@ -197,16 +206,14 @@ def scan_coins(coins):
         ema_4h = calc_ema(closes_4h, EMA_PERIOD)
         ema_1h = calc_ema(closes_1h, EMA_PERIOD)
 
-        # Step 1 — 4H must touch the EMA
         if not check_4h_touch(candles_4h, ema_4h):
             continue
 
-        # Step 2 — 1H must confirm direction
         direction = check_1h_confirmation(candles_1h, ema_1h)
         if direction is None:
             continue
 
-        log.info(f"{ticker} EMA50 touch confirmed — {direction}")
+        log.info(f"{ticker} EMA50 touch — {direction}")
 
         entry = {
             "ticker":     ticker,
@@ -280,11 +287,11 @@ def run_scan():
 
 
 # =========================
-# HOURLY TIMER — runs at :05 every hour
+# HOURLY TIMER — runs at :10
 # =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
-  next_run = now.replace(minute=10, second=0, microsecond=0)
+    next_run = now.replace(minute=15, second=0, microsecond=0)
     if now >= next_run:
         next_run += timedelta(hours=1)
     sleep_secs = (next_run - now).total_seconds()
@@ -297,7 +304,7 @@ def wait_until_next_scan():
 # =========================
 if __name__ == "__main__":
     log.info("EMA 50 Touch Scanner started.")
-    send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 4H touch + 1H confirmation every hour.")
+    send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 4H touch + 1H confirmation every hour at :15.")
     run_scan()
     while True:
         wait_until_next_scan()

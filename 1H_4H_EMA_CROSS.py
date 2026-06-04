@@ -19,6 +19,10 @@ EMA_FAST          = 12
 EMA_SLOW          = 21
 VOLUME_MA_PERIOD  = 20
 CROSS_LOOKBACK    = 12
+COIN_CACHE_HOURS  = 24
+
+_coin_cache      = {}
+_coin_cache_time = None
 
 
 # =========================
@@ -40,10 +44,19 @@ def send_alert(message):
 
 
 # =========================
-# COINGECKO — GET COINS ABOVE $200M MCAP
-# returns dict: { "BTC": { symbol, market_cap, price_change_24h, current_price } }
+# COINGECKO — CACHED COIN LIST
+# refreshes once every 24 hours
 # =========================
 def get_coins():
+    global _coin_cache, _coin_cache_time
+    now = datetime.now(timezone.utc)
+
+    if _coin_cache and _coin_cache_time:
+        age_hours = (now - _coin_cache_time).total_seconds() / 3600
+        if age_hours < COIN_CACHE_HOURS:
+            log.info(f"{len(_coin_cache)} coins from cache")
+            return _coin_cache
+
     coins = {}
     page = 1
     while True:
@@ -83,7 +96,10 @@ def get_coins():
         except Exception as e:
             log.error(f"CoinGecko error: {e}")
             break
-    log.info(f"{len(coins)} coins loaded from CoinGecko")
+
+    _coin_cache = coins
+    _coin_cache_time = now
+    log.info(f"{len(coins)} coins fetched from CoinGecko")
     return coins
 
 
@@ -112,7 +128,7 @@ def get_candles(ticker, interval):
         if not candles or len(candles) < 50:
             return None, None
 
-        candles = list(reversed(candles))[:-1]  # oldest first, exclude live candle
+        candles = list(reversed(candles))[:-1]
         closes  = [float(c["close"]) for c in candles]
         volumes = [float(c["volume"]) for c in candles]
         return closes, volumes
@@ -145,7 +161,7 @@ def volume_above_ma(volumes, candle_index=-1, period=VOLUME_MA_PERIOD):
 
 
 # =========================
-# FIND EMA CROSS — lookback 12 candles
+# FIND EMA CROSS
 # =========================
 def find_cross(closes, lookback=CROSS_LOOKBACK):
     ema_fast = calc_ema(closes, EMA_FAST)
@@ -169,8 +185,6 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
 
 # =========================
 # SIGNAL LOGIC
-# Signal 1: fresh cross on last candle + volume above MA
-# Signal 2: cross 2-12 candles ago (low vol then) + current vol now above MA
 # =========================
 def check_signal(closes, volumes):
     direction, candles_ago = find_cross(closes)
@@ -203,7 +217,6 @@ def fmt_mcap(mcap):
 
 # =========================
 # SCAN ONE TIMEFRAME
-# returns list of signal dicts
 # =========================
 def scan_timeframe(coins, interval):
     bullish = []
@@ -309,11 +322,11 @@ def run_scan():
 
 
 # =========================
-# HOURLY TIMER — runs at :05 every hour
+# HOURLY TIMER — runs at :05
 # =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
-    next_run = now.replace(minute=5, second=0, microsecond=0)
+    next_run = now.replace(minute=0, second=0, microsecond=0)
     if now >= next_run:
         next_run += timedelta(hours=1)
     sleep_secs = (next_run - now).total_seconds()
@@ -326,7 +339,7 @@ def wait_until_next_scan():
 # =========================
 if __name__ == "__main__":
     log.info("Intraday EMA Scanner started.")
-    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning 1H + 4H every hour.")
+    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning 1H + 4H every hour at :00.")
     run_scan()
     while True:
         wait_until_next_scan()
