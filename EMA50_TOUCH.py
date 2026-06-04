@@ -284,7 +284,7 @@ def run_scan():
 # =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
-    next_run = now.replace(minute=5, second=0, microsecond=0)
+  next_run = now.replace(minute=10, second=0, microsecond=0)
     if now >= next_run:
         next_run += timedelta(hours=1)
     sleep_secs = (next_run - now).total_seconds()
