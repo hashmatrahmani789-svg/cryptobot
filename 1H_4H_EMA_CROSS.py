@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
     level=logging.INFO,
-   format="%(asctime)s [1H-4H-CROSS] %(message)s",
+    format="%(asctime)s [1H-4H-CROSS] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger(__name__)
@@ -121,7 +121,7 @@ def volume_above_ma(volumes, period=VOLUME_MA_PERIOD):
 
 
 # =========================
-# CHECK SIGNAL — cross in last N candles + volume confirmation
+# CHECK SIGNAL
 # =========================
 def check_signal(closes, volumes):
     ema_fast = calc_ema(closes, EMA_FAST)
@@ -144,21 +144,6 @@ def check_signal(closes, volumes):
                 return "BEARISH", i
 
     return None, None
-
-
-# =========================
-# CHECK IF A CANDLE JUST CLOSED
-# returns True if we are within 2 minutes after candle close
-# =========================
-def candle_just_closed(interval):
-    now = datetime.now(timezone.utc)
-    if interval == "1h":
-        # 1H closes at :00 every hour
-        return now.minute < 2
-    if interval == "4h":
-        # 4H closes at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
-        return now.hour % 4 == 0 and now.minute < 2
-    return False
 
 
 # =========================
@@ -230,21 +215,52 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
 
 
 # =========================
-# MAIN LOOP — runs every 5 minutes, scans at candle close only
+# STARTUP SCAN — catches any crosses in last 12 candles immediately
+# =========================
+def startup_scan(coins):
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    log.info("Startup scan — checking last 12 candles...")
+
+    bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
+    bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
+
+    if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
+        msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
+        send_alert(msg)
+        log.info("Startup scan complete — signals found.")
+    else:
+        log.info("Startup scan complete — no signals.")
+
+
+# =========================
+# CHECK IF A CANDLE JUST CLOSED
+# =========================
+def candle_just_closed(interval):
+    now = datetime.now(timezone.utc)
+    if interval == "1h":
+        return now.minute < 2
+    if interval == "4h":
+        return now.hour % 4 == 0 and now.minute < 2
+    return False
+
+
+# =========================
+# MAIN LOOP
 # =========================
 def run():
-    log.info("Intraday EMA Scanner started.")
+    log.info("1H 4H EMA Cross Scanner started.")
     send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning at 1H + 4H candle close 24/7.")
 
-    # refresh coins every hour
     coins = get_coins()
     last_coin_refresh = datetime.now(timezone.utc)
+
+    # scan immediately on startup
+    startup_scan(coins)
 
     while True:
         now = datetime.now(timezone.utc)
         now_str = now.strftime("%Y-%m-%d %H:%M UTC")
 
-        # refresh coin list every hour
         if (now - last_coin_refresh).total_seconds() > 3600:
             coins = get_coins()
             last_coin_refresh = now
@@ -263,7 +279,7 @@ def run():
         if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
             msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
             send_alert(msg)
-            log.info("Scan complete — signals found.")
+            log.info("Signals sent.")
         else:
             if candle_just_closed("1h") or candle_just_closed("4h"):
                 log.info("Scan complete — no signals.")
