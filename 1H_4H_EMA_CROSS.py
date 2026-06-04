@@ -1,7 +1,7 @@
 import time
 import logging
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,11 +14,38 @@ import os
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-MIN_MARKET_CAP   = 200_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
 CROSS_LOOKBACK   = 12
 CHECK_INTERVAL   = 300
+
+COINS = [
+    'BTC','ETH','BNB','XRP','SOL','TRX','HYPE','DOGE','LEO','ZEC','RAIN','ADA','XLM','XMR',
+    'CC','LINK','LAB','WBT','BCH','TON','HBAR','LTC','AVAX','SUI','NEAR','SHI','XAUT','CRO',
+    'TAO','WLFI','MNT','ONDO','DOT','ASTER','WLD','UNI','OKB','ICP','PI','BGB','PEPE','ETC',
+    'AAVE','QNT','BCAP','RENDER','POL','ALGO','ATOM','ENA','FIL','APT','INJ','FLR','XDC',
+    'PUMP','JUP','ARB','FET','HASH','VET','DASH','TRUMP','VIRTUAL','PENGU','KITE','BONK',
+    'CAKE','PRIME','LIT','LUNC','STX','SEI','KAU','SUN','AERO','TIA','XTZ','CRV','ZRO',
+    'ETHFI','SPX','JTO','CHZ','OHM','PYTH','BSV','GNO','CFX','TEL','DCR','KAIA','FLOKI',
+    'JASMY','LDO','GRT','OP','PENDLE','MON','XPL','IOTA','GWEI','ENS','ULTIMA','BILL',
+    'AKT','KOGE','ONYC','TWT','TRAC','SKYAI','AXS','REAL','WFI','NEX','USAT','COMP','NEO',
+    'RAY','THETA','SYRUP','MX','BTSE','GENIUS','XCN','BORG','SAND','AR','BAT','HOME',
+    'DYDX','MANA','ZANO','RAIL','EIGEN','STRCX','CFG','APE','VSN','GALA','SHFL','OZO',
+    'GLM','RUNE','WEMIX','HNT','SFP','FT','XEC','CVX','IMX','ZK','KAITO','1INCH','AWE',
+    'STAC','RIVER','TKX'
+]
+
+# remove known stables and junk
+EXCLUDE = {'USDS','USDC','USDT','BUSD','DAI','TUSD','USDP','GUSD','FRAX','LUSD','USDD',
+           'FDUSD','USDG','RLUSD','PYUSD','USYC','USDG','BUIDL','USDY','PAXG','USTB',
+           'USDAI','RUSD','USDA','USDM','APYUSD','CRVUSD','EURS','AUSD','NUSD','FRXUSD',
+           'THBILL','DUSD','SATUSD','USDAT','EURSAFO','APXUSD','EURC','EURCV','USDTB',
+           'EUTBL','STABLE','JTRSY','FIGR_HELOC','PC0000031','PC0000033','PC0000097',
+           'PC0000023','PC0000015','PC0000085','PC0000077','M','U','B','S','A','H',
+           'USDF','SKY','BFUSD','MORPHO','VVV','币安人生','FARTCOIN','BANANAS31','GOMINING',
+           'CHEEMS','CRCLON','TIBBIR','ACRED','SAHARA','FORM','BMX','STAC'}
+
+COINS = [c for c in COINS if c not in EXCLUDE]
 
 
 # =========================
@@ -37,45 +64,6 @@ def send_alert(message):
             log.error(f"Telegram error {r.status_code}: {r.text}")
     except Exception as e:
         log.error(f"Telegram exception: {e}")
-
-
-# =========================
-# COINGECKO
-# =========================
-def get_coins():
-    coins = []
-    page = 1
-    while True:
-        try:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/coins/markets",
-                params={
-                    "vs_currency": "usd",
-                    "order": "market_cap_desc",
-                    "per_page": 250,
-                    "page": page,
-                    "sparkline": False
-                },
-                timeout=20
-            )
-            data = r.json()
-            if not isinstance(data, list):
-                log.error(f"CoinGecko bad response: {data}")
-                time.sleep(10)
-                break
-            if not data:
-                break
-            filtered = [c for c in data if c.get("market_cap", 0) >= MIN_MARKET_CAP]
-            coins.extend(filtered)
-            if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
-                break
-            page += 1
-            time.sleep(1.5)
-        except Exception as e:
-            log.error(f"CoinGecko error: {e}")
-            break
-    log.info(f"{len(coins)} coins loaded with mcap > $200M")
-    return coins
 
 
 # =========================
@@ -108,7 +96,7 @@ def calc_ema(values, period):
 
 
 # =========================
-# SIGNAL — cross only, no volume filter
+# SIGNAL
 # =========================
 def check_signal(closes):
     ema_fast = calc_ema(closes, EMA_FAST)
@@ -129,14 +117,12 @@ def check_signal(closes):
 # =========================
 # SCAN ONE TIMEFRAME
 # =========================
-def scan_timeframe(coins, interval):
+def scan_timeframe(interval):
     bullish = []
     bearish = []
 
-    for coin in coins:
-        ticker = coin.get("symbol", "").upper()
+    for ticker in COINS:
         symbol = ticker + "USDT"
-
         closes = get_candles(symbol, interval)
         if closes is None:
             closes = get_candles(ticker + "BTC", interval)
@@ -187,26 +173,15 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
 
 
 # =========================
-# CANDLE JUST CLOSED CHECK
-# =========================
-def candle_just_closed(interval):
-    return True
-
-
-# =========================
 # SCAN
 # =========================
-def do_scan(coins, intervals, label=""):
+def do_scan(label=""):
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if label:
         log.info(f"{label} scanning...")
 
-    bullish_1h = bearish_1h = bullish_4h = bearish_4h = []
-
-    if "1h" in intervals:
-        bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
-    if "4h" in intervals:
-        bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
+    bullish_1h, bearish_1h = scan_timeframe("1h")
+    bullish_4h, bearish_4h = scan_timeframe("4h")
 
     if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
         msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
@@ -220,32 +195,14 @@ def do_scan(coins, intervals, label=""):
 # MAIN LOOP
 # =========================
 def run():
-    log.info("1H 4H EMA Cross Scanner started.")
-    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning at 1H + 4H candle close 24/7.")
+    log.info(f"1H 4H EMA Cross Scanner started. {len(COINS)} coins loaded.")
+    send_alert(f"✅ <b>EMA 12/21 Scanner Online</b>\n{len(COINS)} coins loaded. Scanning every 5 min.")
 
-    coins = get_coins()
-    last_coin_refresh = datetime.now(timezone.utc)
-
-    # startup scan — catch any recent crosses
-    do_scan(coins, ["1h", "4h"], label="Startup")
+    do_scan(label="Startup")
 
     while True:
-        now = datetime.now(timezone.utc)
-
-        if (now - last_coin_refresh).total_seconds() > 3600:
-            coins = get_coins()
-            last_coin_refresh = now
-
-        intervals = []
-        if candle_just_closed("1h"):
-            intervals.append("1h")
-        if candle_just_closed("4h"):
-            intervals.append("4h")
-
-        if intervals:
-            do_scan(coins, intervals, label="+".join(i.upper() for i in intervals))
-
         time.sleep(CHECK_INTERVAL)
+        do_scan()
 
 
 if __name__ == "__main__":
