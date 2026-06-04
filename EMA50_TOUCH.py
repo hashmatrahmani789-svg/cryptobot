@@ -12,12 +12,21 @@ log = logging.getLogger(__name__)
 
 import os
 
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-MIN_MARKET_CAP   = 200_000_000
-EMA_PERIOD       = 50
-SCAN_INTERVAL_M  = 15
-SCAN_OFFSET_M    = 10  # runs at :10 :25 :40 :55 — offset from EMA cross at :05
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
+MIN_MARKET_CAP    = 100_000_000
+EMA_PERIOD        = 50
+CHECK_INTERVAL    = 300
+
+STABLECOINS = {
+    "USDT","USDC","BUSD","DAI","TUSD","USDP","GUSD","FRAX","LUSD","USDD",
+    "FDUSD","USDG","RLUSD","PYUSD","USDY","PAXG","USTB","USDAI","RUSD",
+    "USDA","USDM","CRVUSD","EURS","AUSD","NUSD","FRXUSD","DUSD","SATUSD",
+    "USDTB","EUTBL","EURC","EURCV","APXUSD","EURSAFO","USDS","USDE",
+    "SUSD","TUSD","MUSD","CUSD","ZUSD","HUSD","OUSD","USDX","USDJ",
+    "USDN","USDQ","USDW","USDFL","USDH","USDL","USDV","USDZ"
+}
 
 
 # =========================
@@ -39,11 +48,15 @@ def send_alert(message):
 
 
 # =========================
-# COINGECKO — GET COINS ABOVE $200M MCAP
+# COINGECKO — refreshes at :30 every hour (offset from EMA cross bot)
 # =========================
 def get_coins():
     coins = []
     page = 1
+    headers = {}
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+
     while True:
         try:
             r = requests.get(
@@ -55,56 +68,71 @@ def get_coins():
                     "page": page,
                     "sparkline": False
                 },
+                headers=headers,
                 timeout=20
             )
             data = r.json()
             if not isinstance(data, list):
                 log.error(f"CoinGecko bad response: {data}")
-                time.sleep(10)
                 break
             if not data:
                 break
-            filtered = [c for c in data if c.get("market_cap", 0) >= MIN_MARKET_CAP]
+            filtered = [
+                c["symbol"].upper() for c in data
+                if c.get("market_cap", 0) >= MIN_MARKET_CAP
+                and c["symbol"].upper() not in STABLECOINS
+                and not c["symbol"].upper().startswith("USD")
+            ]
             coins.extend(filtered)
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
             page += 1
-            time.sleep(1.5)
+            time.sleep(2)
         except Exception as e:
             log.error(f"CoinGecko error: {e}")
             break
-    log.info(f"{len(coins)} coins loaded with mcap > $200M")
+
+    log.info(f"{len(coins)} coins loaded from CoinGecko")
     return coins
 
 
 # =========================
-# BINANCE — GET CANDLES
+# COINBASE — GET CANDLES
 # =========================
-def get_candles(symbol, interval, limit=120):
+def get_candles_coinbase(ticker, granularity_seconds):
+    product_id = f"{ticker}-USD"
     try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
-            timeout=10
-        )
-        data = r.json()
-        if not isinstance(data, list) or len(data) < 60:
+        closes = []
+        end = datetime.now(timezone.utc)
+
+        for _ in range(2):
+            start = end - timedelta(seconds=granularity_seconds * 300)
+            r = requests.get(
+                f"https://api.exchange.coinbase.com/products/{product_id}/candles",
+                params={
+                    "granularity": granularity_seconds,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                },
+                timeout=10
+            )
+            data = r.json()
+            if not isinstance(data, list) or not data:
+                break
+            page_closes = [float(c[4]) for c in reversed(data)]
+            closes = page_closes + closes
+            end = start
+            time.sleep(0.1)
+
+        if len(closes) < 60:
             return None
-        candles = [
-            {
-                "high":  float(x[2]),
-                "low":   float(x[3]),
-                "close": float(x[4]),
-            }
-            for x in data[:-1]
-        ]
-        return candles
+        return closes[:-1]  # exclude live candle
     except:
         return None
 
 
 # =========================
-# EMA CALCULATION
+# EMA
 # =========================
 def calc_ema(values, period):
     k = 2 / (period + 1)
@@ -115,54 +143,85 @@ def calc_ema(values, period):
 
 
 # =========================
-# SIGNAL — price touched EMA on last closed candle
-# 0.5% tolerance so near-misses are caught
-# low <= EMA+tol AND high >= EMA-tol → touched
-# direction = BULLISH if close above EMA, BEARISH if close below
+# SIGNAL — wick touched EMA 50
+# low <= EMA <= high
 # =========================
-def check_touch(candles):
+def check_touch(closes):
+    ema = calc_ema(closes, EMA_PERIOD)
+    e = ema[-1]
+
+    # need high and low — fetch full candle data
+    return e, closes[-1]
+
+
+def check_touch_full(candles):
     closes = [c["close"] for c in candles]
-    ema    = calc_ema(closes, EMA_PERIOD)
+    ema = calc_ema(closes, EMA_PERIOD)
+    e = ema[-1]
+    c = candles[-1]
 
-    c   = candles[-1]
-    e   = ema[-1]
-    tol = e * 0.005
-
-    if c["low"] <= e + tol and c["high"] >= e - tol:
+    if c["low"] <= e <= c["high"]:
         if c["close"] >= e:
             return "BULLISH"
         else:
             return "BEARISH"
-
     return None
+
+
+# =========================
+# COINBASE — GET FULL CANDLES (with high/low)
+# =========================
+def get_full_candles_coinbase(ticker, granularity_seconds):
+    product_id = f"{ticker}-USD"
+    try:
+        candles = []
+        end = datetime.now(timezone.utc)
+
+        for _ in range(2):
+            start = end - timedelta(seconds=granularity_seconds * 300)
+            r = requests.get(
+                f"https://api.exchange.coinbase.com/products/{product_id}/candles",
+                params={
+                    "granularity": granularity_seconds,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                },
+                timeout=10
+            )
+            data = r.json()
+            if not isinstance(data, list) or not data:
+                break
+            # [time, low, high, open, close, volume]
+            page = [{"low": float(c[1]), "high": float(c[2]), "close": float(c[4])} for c in reversed(data)]
+            candles = page + candles
+            end = start
+            time.sleep(0.1)
+
+        if len(candles) < 60:
+            return None
+        return candles[:-1]  # exclude live candle
+    except:
+        return None
 
 
 # =========================
 # SCAN ONE TIMEFRAME
 # =========================
-def scan_timeframe(coins, interval):
+def scan_timeframe(coins, interval_label):
+    granularity = 3600 if interval_label == "1h" else 14400
     bullish = []
     bearish = []
 
-    for coin in coins:
-        ticker = coin.get("symbol", "").upper()
-        symbol = ticker + "USDT"
-
-        candles = get_candles(symbol, interval)
-
-        if candles is None:
-            symbol = ticker + "BTC"
-            candles = get_candles(symbol, interval)
-
+    for ticker in coins:
+        candles = get_full_candles_coinbase(ticker, granularity)
         if candles is None:
             continue
 
-        direction = check_touch(candles)
-
+        direction = check_touch_full(candles)
         if direction is None:
             continue
 
-        log.info(f"{symbol} [{interval}] {direction} (touch)")
+        log.info(f"{ticker} [{interval_label}] {direction} (touch)")
 
         if direction == "BULLISH":
             bullish.append(ticker)
@@ -184,7 +243,7 @@ def build_message(results_by_tf, now_str):
         return (
             f"🔍 <b>EMA 50 Scan</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"No touches found on 15M, 1H or 4H\n\n"
+            f"No touches found on 1H or 4H\n\n"
             f"🕐 {now_str}"
         )
 
@@ -193,83 +252,94 @@ def build_message(results_by_tf, now_str):
         "━━━━━━━━━━━━━━━━",
     ]
 
-    tf_labels = {"15m": "15M", "1h": "1H", "4h": "4H"}
-
     for interval, (bullish, bearish) in results_by_tf.items():
         if not bullish and not bearish:
             continue
-
-        label = tf_labels.get(interval, interval.upper())
+        label = "1H" if interval == "1h" else "4H"
         lines.append(f"\n⏱ <b>{label} Timeframe</b>")
-
         if bullish:
-            coins_str = "  •  ".join(bullish)
-            lines.append(f"📈 <b>Bullish</b>\n{coins_str}")
-
+            lines.append(f"📈 <b>Bullish</b>\n{'  •  '.join(bullish)}")
         if bearish:
-            coins_str = "  •  ".join(bearish)
-            lines.append(f"📉 <b>Bearish</b>\n{coins_str}")
+            lines.append(f"📉 <b>Bearish</b>\n{'  •  '.join(bearish)}")
 
     lines.append(f"\n🕐 {now_str}")
-
     return "\n".join(lines)
 
 
 # =========================
-# MAIN SCAN
+# SCAN
 # =========================
-def run_scan():
+def do_scan(coins, label=""):
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    log.info(f"Scanning... {now_str}")
-
-    coins = get_coins()
-
-    if not coins:
-        log.error("No coins loaded, skipping scan.")
-        return
+    if label:
+        log.info(f"{label} scanning...")
 
     results = {}
-    for interval in ["15m", "1h", "4h"]:
+    for interval in ["1h", "4h"]:
         bullish, bearish = scan_timeframe(coins, interval)
         results[interval] = (bullish, bearish)
 
     msg = build_message(results, now_str)
     send_alert(msg)
-
     log.info("Scan complete.")
 
 
 # =========================
-# 15 MINUTE TIMER — runs at :10 :25 :40 :55
-# offset from EMA cross bot which runs at :05
+# CANDLE JUST CLOSED
 # =========================
-def wait_until_next_scan():
+def candle_just_closed(interval):
     now = datetime.now(timezone.utc)
-    minutes = now.minute
-
-    current_slot = (minutes - SCAN_OFFSET_M) // SCAN_INTERVAL_M
-    next_minute = (current_slot + 1) * SCAN_INTERVAL_M + SCAN_OFFSET_M
-
-    if next_minute >= 60:
-        next_run = now.replace(minute=next_minute - 60, second=0, microsecond=0) + timedelta(hours=1)
-    else:
-        next_run = now.replace(minute=next_minute, second=0, microsecond=0)
-
-    if next_run <= now:
-        next_run += timedelta(minutes=SCAN_INTERVAL_M)
-
-    sleep_secs = (next_run - now).total_seconds()
-    log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
-    time.sleep(sleep_secs)
+    if interval == "1h":
+        return now.minute < 2
+    if interval == "4h":
+        return now.hour % 4 == 0 and now.minute < 2
+    return False
 
 
 # =========================
-# START
+# COIN REFRESH — at :30 every hour (offset from EMA cross bot at :00)
 # =========================
-if __name__ == "__main__":
+def coins_need_refresh(last_refresh):
+    now = datetime.now(timezone.utc)
+    if (now - last_refresh).total_seconds() < 3600:
+        return False
+    return True
+
+
+# =========================
+# MAIN LOOP
+# =========================
+def run():
     log.info("EMA 50 Touch Scanner started.")
-    send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 15M + 1H + 4H every 15 minutes.")
-    run_scan()
+    send_alert("✅ <b>EMA 50 Scanner Online</b>\nCoinGecko + Coinbase. Scanning 1H + 4H at candle close.")
+
+    # wait until :30 to load coins (offset from EMA cross bot)
+    now = datetime.now(timezone.utc)
+    if now.minute < 30:
+        wait = now.replace(minute=30, second=0, microsecond=0)
+    else:
+        wait = (now + timedelta(hours=1)).replace(minute=30, second=0, microsecond=0)
+    sleep_secs = (wait - now).total_seconds()
+    if sleep_secs > 60:
+        log.info(f"Waiting until :30 to load coins — sleeping {sleep_secs/60:.1f}m")
+        time.sleep(sleep_secs)
+
+    coins = get_coins()
+    last_coin_refresh = datetime.now(timezone.utc)
+
+    do_scan(coins, label="Startup")
+
     while True:
-        wait_until_next_scan()
-        run_scan()
+        time.sleep(CHECK_INTERVAL)
+        now = datetime.now(timezone.utc)
+
+        if coins_need_refresh(last_coin_refresh):
+            coins = get_coins()
+            last_coin_refresh = now
+
+        if candle_just_closed("1h") or candle_just_closed("4h"):
+            do_scan(coins, label="Candle close")
+
+
+if __name__ == "__main__":
+    run()
