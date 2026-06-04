@@ -71,7 +71,7 @@ def get_coins():
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
             page += 1
-            time.sleep(1.5)
+            time.sleep(2)
         except Exception as e:
             log.error(f"CoinGecko error: {e}")
             break
@@ -80,22 +80,47 @@ def get_coins():
 
 
 # =========================
-# BINANCE — GET CANDLES
+# COINBASE — GET CANDLES
+# product_id format: BTC-USDT, ETH-USDT etc.
+# granularity: ONE_HOUR, FOUR_HOUR
 # =========================
-def get_candles(symbol, interval, limit=120):
+def get_candles(ticker, interval):
+    granularity_map = {
+        "1h": "ONE_HOUR",
+        "4h": "FOUR_HOUR"
+    }
+    granularity = granularity_map.get(interval)
+    if not granularity:
+        return None, None
+
+    product_id = f"{ticker}-USDT"
+
     try:
         r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
+            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
+            params={
+                "granularity": granularity,
+                "limit": 120
+            },
             timeout=10
         )
         data = r.json()
-        if not isinstance(data, list) or len(data) < 50:
+        candles = data.get("candles", [])
+        if not candles or len(candles) < 50:
             return None, None
-        closes  = [float(x[4]) for x in data[:-1]]
-        volumes = [float(x[5]) for x in data[:-1]]
+
+        # Coinbase returns newest first — reverse to get oldest first
+        candles = list(reversed(candles))
+
+        # exclude the last (live) candle
+        candles = candles[:-1]
+
+        closes  = [float(c["close"]) for c in candles]
+        volumes = [float(c["volume"]) for c in candles]
         return closes, volumes
-    except:
+
+    except Exception as e:
+        log.error(f"Coinbase candle error {product_id}: {e}")
         return None, None
 
 
@@ -178,12 +203,8 @@ def scan_timeframe(coins, interval):
 
     for coin in coins:
         ticker = coin.get("symbol", "").upper()
-        symbol = ticker + "USDT"
 
-        closes, volumes = get_candles(symbol, interval)
-        if closes is None:
-            symbol = ticker + "BTC"
-            closes, volumes = get_candles(symbol, interval)
+        closes, volumes = get_candles(ticker, interval)
         if closes is None:
             continue
 
@@ -192,14 +213,14 @@ def scan_timeframe(coins, interval):
             continue
 
         signal_type = "S1" if candles_ago == 1 else f"S2({candles_ago})"
-        log.info(f"{symbol} [{interval}] {direction} {signal_type}")
+        log.info(f"{ticker} [{interval}] {direction} {signal_type}")
 
         if direction == "BULLISH":
             bullish.append(ticker)
         else:
             bearish.append(ticker)
 
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     return bullish, bearish
 
@@ -223,16 +244,16 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
     if bullish_1h or bearish_1h:
         lines.append("\n⏱ <b>1H Timeframe</b>")
         if bullish_1h:
-            lines.append(f"📈 <b>Bullish</b>\n" + "  •  ".join(bullish_1h))
+            lines.append("📈 <b>Bullish</b>\n" + "  •  ".join(bullish_1h))
         if bearish_1h:
-            lines.append(f"📉 <b>Bearish</b>\n" + "  •  ".join(bearish_1h))
+            lines.append("📉 <b>Bearish</b>\n" + "  •  ".join(bearish_1h))
 
     if bullish_4h or bearish_4h:
         lines.append("\n⏱ <b>4H Timeframe</b>")
         if bullish_4h:
-            lines.append(f"📈 <b>Bullish</b>\n" + "  •  ".join(bullish_4h))
+            lines.append("📈 <b>Bullish</b>\n" + "  •  ".join(bullish_4h))
         if bearish_4h:
-            lines.append(f"📉 <b>Bearish</b>\n" + "  •  ".join(bearish_4h))
+            lines.append("📉 <b>Bearish</b>\n" + "  •  ".join(bearish_4h))
 
     lines.append(f"\n🕐 {now_str}")
     return "\n".join(lines)

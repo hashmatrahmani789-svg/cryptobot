@@ -69,7 +69,7 @@ def get_coins():
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
             page += 1
-            time.sleep(1.5)
+            time.sleep(2)
         except Exception as e:
             log.error(f"CoinGecko error: {e}")
             break
@@ -78,29 +78,53 @@ def get_coins():
 
 
 # =========================
-# BINANCE — GET CANDLES
+# COINBASE — GET CANDLES
+# granularity: FIFTEEN_MINUTE, ONE_HOUR, FOUR_HOUR
 # =========================
-def get_candles(symbol, interval, limit=120):
+def get_candles(ticker, interval):
+    granularity_map = {
+        "15m": "FIFTEEN_MINUTE",
+        "1h":  "ONE_HOUR",
+        "4h":  "FOUR_HOUR"
+    }
+    granularity = granularity_map.get(interval)
+    if not granularity:
+        return None
+
+    product_id = f"{ticker}-USDT"
+
     try:
         r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
+            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
+            params={
+                "granularity": granularity,
+                "limit": 120
+            },
             timeout=10
         )
         data = r.json()
-        if not isinstance(data, list) or len(data) < 60:
+        candles = data.get("candles", [])
+        if not candles or len(candles) < 60:
             return None
-        candles = [
+
+        # Coinbase returns newest first — reverse to oldest first
+        candles = list(reversed(candles))
+
+        # exclude live candle
+        candles = candles[:-1]
+
+        return [
             {
-                "open":  float(x[1]),
-                "high":  float(x[2]),
-                "low":   float(x[3]),
-                "close": float(x[4]),
+                "open":  float(c["open"]),
+                "high":  float(c["high"]),
+                "low":   float(c["low"]),
+                "close": float(c["close"]),
             }
-            for x in data[:-1]
+            for c in candles
         ]
-        return candles
-    except:
+
+    except Exception as e:
+        log.error(f"Coinbase candle error {product_id}: {e}")
         return None
 
 
@@ -117,8 +141,6 @@ def calc_ema(values, period):
 
 # =========================
 # SIGNAL 1 — WICK TOUCH
-# Bullish: low wicked into/below EMA but closed above
-# Bearish: high wicked into/above EMA but closed below
 # =========================
 def check_wick_touch(candles, ema):
     c   = candles[-1]
@@ -134,8 +156,6 @@ def check_wick_touch(candles, ema):
 
 # =========================
 # SIGNAL 2 — PRICE HELD
-# Bullish: candle body sitting on EMA from above (within 0.5%)
-# Bearish: candle body sitting under EMA from below (within 0.5%)
 # =========================
 def check_held(candles, ema):
     c   = candles[-1]
@@ -151,8 +171,6 @@ def check_held(candles, ema):
 
 # =========================
 # SIGNAL 3 — RECLAIM
-# Bullish: previous candle closed below EMA, current closed above
-# Bearish: previous candle closed above EMA, current closed below
 # =========================
 def check_reclaim(candles, ema):
     prev   = candles[-2]
@@ -168,7 +186,7 @@ def check_reclaim(candles, ema):
 
 
 # =========================
-# CHECK ALL 3 SIGNALS FOR ONE COIN
+# CHECK ALL 3 SIGNALS
 # =========================
 def check_coin(candles):
     closes = [c["close"] for c in candles]
@@ -198,24 +216,20 @@ def scan_timeframe(coins, interval):
 
     for coin in coins:
         ticker = coin.get("symbol", "").upper()
-        symbol = ticker + "USDT"
 
-        candles = get_candles(symbol, interval)
-        if candles is None:
-            symbol = ticker + "BTC"
-            candles = get_candles(symbol, interval)
+        candles = get_candles(ticker, interval)
         if candles is None:
             continue
 
         signals = check_coin(candles)
         for direction, label in signals:
-            log.info(f"{symbol} [{interval}] {direction} ({label})")
+            log.info(f"{ticker} [{interval}] {direction} ({label})")
             if direction == "BULLISH":
                 bullish.append((ticker, label))
             else:
                 bearish.append((ticker, label))
 
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     return bullish, bearish
 
