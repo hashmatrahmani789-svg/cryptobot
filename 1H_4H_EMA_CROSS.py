@@ -81,7 +81,7 @@ def get_coins():
 # =========================
 # BINANCE
 # =========================
-def get_candles(symbol, interval, limit=120):
+def get_candles(symbol, interval, limit=200):
     try:
         r = requests.get(
             "https://api.binance.com/api/v3/klines",
