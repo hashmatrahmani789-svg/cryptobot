@@ -17,6 +17,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MIN_MARKET_CAP   = 200_000_000
 EMA_PERIOD       = 50
 SCAN_INTERVAL_M  = 15
+SCAN_OFFSET_M    = 10  # runs at :10 :25 :40 :55 — offset from EMA cross at :05
 
 
 # =========================
@@ -57,6 +58,10 @@ def get_coins():
                 timeout=20
             )
             data = r.json()
+            if not isinstance(data, list):
+                log.error(f"CoinGecko bad response: {data}")
+                time.sleep(10)
+                break
             if not data:
                 break
             filtered = [c for c in data if c.get("market_cap", 0) >= MIN_MARKET_CAP]
@@ -85,7 +90,6 @@ def get_candles(symbol, interval, limit=120):
         data = r.json()
         if not isinstance(data, list) or len(data) < 60:
             return None
-        # exclude live candle
         candles = [
             {
                 "high":  float(x[2]),
@@ -112,17 +116,19 @@ def calc_ema(values, period):
 
 # =========================
 # SIGNAL — price touched EMA on last closed candle
-# low <= EMA <= high  →  touched
+# 0.5% tolerance so near-misses are caught
+# low <= EMA+tol AND high >= EMA-tol → touched
 # direction = BULLISH if close above EMA, BEARISH if close below
 # =========================
 def check_touch(candles):
     closes = [c["close"] for c in candles]
     ema    = calc_ema(closes, EMA_PERIOD)
 
-    c = candles[-1]
-    e = ema[-1]
+    c   = candles[-1]
+    e   = ema[-1]
+    tol = e * 0.005
 
-    if c["low"] <= e <= c["high"]:
+    if c["low"] <= e + tol and c["high"] >= e - tol:
         if c["close"] >= e:
             return "BULLISH"
         else:
@@ -218,6 +224,10 @@ def run_scan():
 
     coins = get_coins()
 
+    if not coins:
+        log.error("No coins loaded, skipping scan.")
+        return
+
     results = {}
     for interval in ["15m", "1h", "4h"]:
         bullish, bearish = scan_timeframe(coins, interval)
@@ -230,17 +240,23 @@ def run_scan():
 
 
 # =========================
-# 15 MINUTE TIMER — runs at :00 :15 :30 :45
+# 15 MINUTE TIMER — runs at :10 :25 :40 :55
+# offset from EMA cross bot which runs at :05
 # =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
     minutes = now.minute
-    next_minute = (minutes // SCAN_INTERVAL_M + 1) * SCAN_INTERVAL_M
+
+    current_slot = (minutes - SCAN_OFFSET_M) // SCAN_INTERVAL_M
+    next_minute = (current_slot + 1) * SCAN_INTERVAL_M + SCAN_OFFSET_M
 
     if next_minute >= 60:
-        next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        next_run = now.replace(minute=next_minute - 60, second=0, microsecond=0) + timedelta(hours=1)
     else:
         next_run = now.replace(minute=next_minute, second=0, microsecond=0)
+
+    if next_run <= now:
+        next_run += timedelta(minutes=SCAN_INTERVAL_M)
 
     sleep_secs = (next_run - now).total_seconds()
     log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")

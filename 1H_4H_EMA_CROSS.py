@@ -18,7 +18,7 @@ MIN_MARKET_CAP   = 200_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
 VOLUME_MA_PERIOD = 20
-CROSS_LOOKBACK   = 6  # how many candles back to look for a delayed cross
+CROSS_LOOKBACK   = 6
 
 
 # =========================
@@ -59,6 +59,10 @@ def get_coins():
                 timeout=20
             )
             data = r.json()
+            if not isinstance(data, list):
+                log.error(f"CoinGecko bad response: {data}")
+                time.sleep(10)
+                break
             if not data:
                 break
             filtered = [c for c in data if c.get("market_cap", 0) >= MIN_MARKET_CAP]
@@ -87,7 +91,6 @@ def get_candles(symbol, interval, limit=120):
         data = r.json()
         if not isinstance(data, list) or len(data) < 50:
             return None, None
-        # exclude the live/current candle (last item)
         closes  = [float(x[4]) for x in data[:-1]]
         volumes = [float(x[5]) for x in data[:-1]]
         return closes, volumes
@@ -108,34 +111,22 @@ def calc_ema(values, period):
 
 # =========================
 # VOLUME ABOVE MA CHECK
-# checks if volume at a specific candle index is above the 20-candle MA
-# index -1 = last closed candle, -2 = one before, etc.
 # =========================
 def volume_above_ma(volumes, candle_index=-1, period=VOLUME_MA_PERIOD):
-    # we need enough candles before the target candle to compute MA
-    # candle_index is negative (e.g. -1 = last, -6 = 6 from end)
-    abs_index = len(volumes) + candle_index  # convert to positive
+    abs_index = len(volumes) + candle_index
     if abs_index < period:
         return False
-    # MA = average of the 'period' candles BEFORE the target candle
     ma = sum(volumes[abs_index - period : abs_index]) / period
     return volumes[abs_index] > ma
 
 
 # =========================
 # FIND EMA CROSS IN LAST N CANDLES
-# returns: (direction, candles_ago)
-#   direction = "BULLISH" or "BEARISH"
-#   candles_ago = 1 means last closed candle (fresh cross)
-#                 2-6 means cross happened that many candles back
-# returns (None, None) if no cross found
 # =========================
 def find_cross(closes, lookback=CROSS_LOOKBACK):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
 
-    # check from most recent candle backwards
-    # index -1 = last closed candle = 1 candle ago
     for i in range(1, lookback + 1):
         curr_idx = -i
         prev_idx = -(i + 1)
@@ -155,29 +146,21 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
 
 # =========================
 # SIGNAL LOGIC
-# Signal 1: cross on last candle + volume above MA at that candle
-# Signal 2: cross happened 2-6 candles ago + current candle vol now above MA
 # =========================
 def check_signal(closes, volumes):
     direction, candles_ago = find_cross(closes)
 
     if direction is None:
-        return None, None  # no cross found at all
+        return None, None
 
     if candles_ago == 1:
-        # === SIGNAL 1: fresh cross ===
-        # volume must be above MA on the cross candle (last closed candle)
         if volume_above_ma(volumes, candle_index=-1):
             return direction, 1
         else:
-            return None, None  # cross happened but vol too low — wait for Signal 2
+            return None, None
 
     else:
-        # === SIGNAL 2: delayed confirmation ===
-        # cross happened 2-6 candles ago
-        # current candle volume is NOW above MA
         current_vol_high = volume_above_ma(volumes, candle_index=-1)
-
         if current_vol_high:
             return direction, candles_ago
 
@@ -186,7 +169,6 @@ def check_signal(closes, volumes):
 
 # =========================
 # SCAN ONE TIMEFRAME
-# returns bullish and bearish lists
 # =========================
 def scan_timeframe(coins, interval):
     bullish = []
@@ -198,7 +180,6 @@ def scan_timeframe(coins, interval):
 
         closes, volumes = get_candles(symbol, interval)
 
-        # fallback to BTC pair
         if closes is None:
             symbol = ticker + "BTC"
             closes, volumes = get_candles(symbol, interval)
@@ -225,7 +206,7 @@ def scan_timeframe(coins, interval):
 
 
 # =========================
-# BUILD ONE BEAUTIFUL MESSAGE PER SCAN
+# BUILD MESSAGE
 # =========================
 def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
     has_signals = any([bullish_1h, bearish_1h, bullish_4h, bearish_4h])
@@ -243,7 +224,6 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
         f"━━━━━━━━━━━━━━━━",
     ]
 
-    # 1H section
     if bullish_1h or bearish_1h:
         lines.append(f"\n⏱ <b>1H Timeframe</b>")
         if bullish_1h:
@@ -253,7 +233,6 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
             coins_str = "  •  ".join(bearish_1h)
             lines.append(f"📉 <b>Bearish</b>\n{coins_str}")
 
-    # 4H section
     if bullish_4h or bearish_4h:
         lines.append(f"\n⏱ <b>4H Timeframe</b>")
         if bullish_4h:
@@ -269,13 +248,17 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
 
 
 # =========================
-# MAIN SCAN — ONE MESSAGE TOTAL
+# MAIN SCAN
 # =========================
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
 
     coins = get_coins()
+
+    if not coins:
+        log.error("No coins loaded, skipping scan.")
+        return
 
     bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
     bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
