@@ -16,7 +16,7 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MIN_MARKET_CAP   = 200_000_000
 EMA_PERIOD       = 50
-SCAN_INTERVAL_M  = 15  # scan every 15 minutes
+SCAN_INTERVAL_M  = 15
 
 
 # =========================
@@ -88,7 +88,6 @@ def get_candles(symbol, interval, limit=120):
         # exclude live candle
         candles = [
             {
-                "open":  float(x[1]),
                 "high":  float(x[2]),
                 "low":   float(x[3]),
                 "close": float(x[4]),
@@ -112,109 +111,28 @@ def calc_ema(values, period):
 
 
 # =========================
-# SIGNAL CHECKS
-# All use the last 2 closed candles:
-#   candles[-1] = last closed candle
-#   candles[-2] = one before that
-#
-# BULLISH signals = EMA acting as support (price above or reclaiming)
-# BEARISH signals = EMA acting as resistance (price below or rejecting)
+# SIGNAL — price touched EMA on last closed candle
+# low <= EMA <= high  →  touched
+# direction = BULLISH if close above EMA, BEARISH if close below
 # =========================
-
-def check_wick_touch(candles, ema):
-    """
-    BULLISH: last candle's LOW wicked into/below EMA but CLOSED above it
-    BEARISH: last candle's HIGH wicked into/above EMA but CLOSED below it
-    """
-    c    = candles[-1]
-    e    = ema[-1]
-
-    # small tolerance: 0.2% of EMA value so tiny misses don't get filtered
-    tol = e * 0.002
-
-    bullish = c["low"] <= e + tol and c["close"] > e
-    bearish = c["high"] >= e - tol and c["close"] < e
-
-    if bullish:
-        return "BULLISH"
-    if bearish:
-        return "BEARISH"
-    return None
-
-
-def check_held(candles, ema):
-    """
-    BULLISH: last candle closed at or just above EMA (body sitting on it, within 0.5%)
-    BEARISH: last candle closed at or just below EMA (body sitting under it, within 0.5%)
-    """
-    c = candles[-1]
-    e = ema[-1]
-
-    tol = e * 0.005  # 0.5% tolerance
-
-    # body sitting ON the EMA from above
-    bullish = c["close"] >= e and c["close"] <= e + tol and c["open"] >= e
-
-    # body sitting UNDER the EMA from below
-    bearish = c["close"] <= e and c["close"] >= e - tol and c["open"] <= e
-
-    if bullish:
-        return "BULLISH"
-    if bearish:
-        return "BEARISH"
-    return None
-
-
-def check_reclaim(candles, ema):
-    """
-    BULLISH: previous candle CLOSED below EMA, current candle CLOSED above EMA
-    BEARISH: previous candle CLOSED above EMA, current candle CLOSED below EMA
-    """
-    prev  = candles[-2]
-    curr  = candles[-1]
-    e_prev = ema[-2]
-    e_curr = ema[-1]
-
-    bullish = prev["close"] < e_prev and curr["close"] > e_curr
-    bearish = prev["close"] > e_prev and curr["close"] < e_curr
-
-    if bullish:
-        return "BULLISH"
-    if bearish:
-        return "BEARISH"
-    return None
-
-
-# =========================
-# CHECK ALL 3 SIGNALS FOR ONE COIN
-# returns list of (direction, signal_label) tuples
-# a coin can trigger multiple signal types in one scan
-# =========================
-def check_coin(candles):
+def check_touch(candles):
     closes = [c["close"] for c in candles]
     ema    = calc_ema(closes, EMA_PERIOD)
 
-    results = []
+    c = candles[-1]
+    e = ema[-1]
 
-    wick    = check_wick_touch(candles, ema)
-    held    = check_held(candles, ema)
-    reclaim = check_reclaim(candles, ema)
+    if c["low"] <= e <= c["high"]:
+        if c["close"] >= e:
+            return "BULLISH"
+        else:
+            return "BEARISH"
 
-    if wick:
-        results.append((wick, "wick"))
-    if held:
-        results.append((held, "held"))
-    if reclaim:
-        results.append((reclaim, "reclaim"))
-
-    return results
+    return None
 
 
 # =========================
 # SCAN ONE TIMEFRAME
-# returns:
-#   bullish = [(ticker, label), ...]
-#   bearish = [(ticker, label), ...]
 # =========================
 def scan_timeframe(coins, interval):
     bullish = []
@@ -233,14 +151,17 @@ def scan_timeframe(coins, interval):
         if candles is None:
             continue
 
-        signals = check_coin(candles)
+        direction = check_touch(candles)
 
-        for direction, label in signals:
-            log.info(f"{symbol} [{interval}] {direction} ({label})")
-            if direction == "BULLISH":
-                bullish.append((ticker, label))
-            else:
-                bearish.append((ticker, label))
+        if direction is None:
+            continue
+
+        log.info(f"{symbol} [{interval}] {direction} (touch)")
+
+        if direction == "BULLISH":
+            bullish.append(ticker)
+        else:
+            bearish.append(ticker)
 
         time.sleep(0.05)
 
@@ -248,26 +169,21 @@ def scan_timeframe(coins, interval):
 
 
 # =========================
-# BUILD ONE BEAUTIFUL MESSAGE
+# BUILD MESSAGE
 # =========================
 def build_message(results_by_tf, now_str):
-    # results_by_tf = { "15M": (bullish, bearish), "1H": (...), "4H": (...) }
-
-    has_signals = any(
-        bull or bear
-        for bull, bear in results_by_tf.values()
-    )
+    has_signals = any(bull or bear for bull, bear in results_by_tf.values())
 
     if not has_signals:
         return (
             f"🔍 <b>EMA 50 Scan</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"No interactions found on 15M, 1H or 4H\n\n"
+            f"No touches found on 15M, 1H or 4H\n\n"
             f"🕐 {now_str}"
         )
 
     lines = [
-        "🎯 <b>EMA 50 — Interaction Alert</b>",
+        "🎯 <b>EMA 50 — Touch Alert</b>",
         "━━━━━━━━━━━━━━━━",
     ]
 
@@ -281,15 +197,11 @@ def build_message(results_by_tf, now_str):
         lines.append(f"\n⏱ <b>{label} Timeframe</b>")
 
         if bullish:
-            coins_str = "  •  ".join(
-                f"{ticker} <i>({sig})</i>" for ticker, sig in bullish
-            )
+            coins_str = "  •  ".join(bullish)
             lines.append(f"📈 <b>Bullish</b>\n{coins_str}")
 
         if bearish:
-            coins_str = "  •  ".join(
-                f"{ticker} <i>({sig})</i>" for ticker, sig in bearish
-            )
+            coins_str = "  •  ".join(bearish)
             lines.append(f"📉 <b>Bearish</b>\n{coins_str}")
 
     lines.append(f"\n🕐 {now_str}")
@@ -322,7 +234,6 @@ def run_scan():
 # =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
-    # round up to next 15 min mark
     minutes = now.minute
     next_minute = (minutes // SCAN_INTERVAL_M + 1) * SCAN_INTERVAL_M
 
@@ -340,7 +251,7 @@ def wait_until_next_scan():
 # START
 # =========================
 if __name__ == "__main__":
-    log.info("EMA 50 Interaction Scanner started.")
+    log.info("EMA 50 Touch Scanner started.")
     send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 15M + 1H + 4H every 15 minutes.")
     run_scan()
     while True:
