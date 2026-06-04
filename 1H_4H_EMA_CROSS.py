@@ -27,7 +27,7 @@ STABLECOINS = {
     "FDUSD","USDG","RLUSD","PYUSD","USDY","PAXG","USTB","USDAI","RUSD",
     "USDA","USDM","CRVUSD","EURS","AUSD","NUSD","FRXUSD","DUSD","SATUSD",
     "USDTB","EUTBL","EURC","EURCV","APXUSD","EURSAFO","USDS","USDE",
-    "SUSD","TUSD","MUSD","CUSD","ZUSD","HUSD","OUSD","USDX","USDJ",
+    "SUSD","MUSD","CUSD","ZUSD","HUSD","OUSD","USDX","USDJ",
     "USDN","USDQ","USDW","USDFL","USDH","USDL","USDV","USDZ"
 }
 
@@ -51,10 +51,45 @@ def send_alert(message):
 
 
 # =========================
-# COINGECKO — GET COINS
+# FORMAT HELPERS
+# =========================
+def fmt_price(p):
+    if p >= 1000:
+        return f"${p:,.0f}"
+    elif p >= 1:
+        return f"${p:.2f}"
+    elif p >= 0.01:
+        return f"${p:.4f}"
+    else:
+        return f"${p:.6f}"
+
+def fmt_mcap(m):
+    if m >= 1_000_000_000:
+        return f"${m/1_000_000_000:.1f}B"
+    else:
+        return f"${m/1_000_000:.0f}M"
+
+def fmt_vol(v):
+    if v >= 1_000_000_000:
+        return f"${v/1_000_000_000:.1f}B"
+    else:
+        return f"${v/1_000_000:.0f}M"
+
+def fmt_change(c):
+    if c is None:
+        return "N/A"
+    sign = "+" if c >= 0 else ""
+    return f"{sign}{c:.1f}%"
+
+def tradingview_link(ticker):
+    return f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
+
+
+# =========================
+# COINGECKO — GET COINS WITH DETAILS
 # =========================
 def get_coins():
-    coins = []
+    coins = {}  # ticker -> {price, mcap, change_24h, volume_24h}
     page = 1
     headers = {}
     if COINGECKO_API_KEY:
@@ -80,13 +115,19 @@ def get_coins():
                 break
             if not data:
                 break
-            filtered = [
-                c["symbol"].upper() for c in data
-                if c.get("market_cap", 0) >= MIN_MARKET_CAP
-                and c["symbol"].upper() not in STABLECOINS
-                and not c["symbol"].upper().startswith("USD")
-            ]
-            coins.extend(filtered)
+            for c in data:
+                ticker = c["symbol"].upper()
+                mcap = c.get("market_cap", 0)
+                if mcap < MIN_MARKET_CAP:
+                    continue
+                if ticker in STABLECOINS or ticker.startswith("USD"):
+                    continue
+                coins[ticker] = {
+                    "price":      c.get("current_price"),
+                    "mcap":       mcap,
+                    "change_24h": c.get("price_change_percentage_24h"),
+                    "volume_24h": c.get("total_volume"),
+                }
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
             page += 1
@@ -100,8 +141,7 @@ def get_coins():
 
 
 # =========================
-# COINBASE — GET CANDLES
-# returns (closes, volumes) or (None, None)
+# COINBASE — GET CANDLES WITH VOLUME
 # =========================
 def get_candles_coinbase(ticker, granularity_seconds):
     product_id = f"{ticker}-USD"
@@ -124,7 +164,6 @@ def get_candles_coinbase(ticker, granularity_seconds):
             data = r.json()
             if not isinstance(data, list) or not data:
                 break
-            # coinbase: [time, low, high, open, close, volume] newest first
             page_closes  = [float(c[4]) for c in reversed(data)]
             page_volumes = [float(c[5]) for c in reversed(data)]
             closes  = page_closes  + closes
@@ -134,7 +173,6 @@ def get_candles_coinbase(ticker, granularity_seconds):
 
         if len(closes) < 50:
             return None, None
-        # exclude live candle
         return closes[:-1], volumes[:-1]
     except:
         return None, None
@@ -162,7 +200,7 @@ def volume_above_ma(volumes, period=VOLUME_MA_PERIOD):
 
 
 # =========================
-# SIGNAL — cross within lookback + volume confirmation
+# SIGNAL
 # =========================
 def check_signal(closes, volumes):
     ema_fast = calc_ema(closes, EMA_FAST)
@@ -190,7 +228,7 @@ def scan_timeframe(coins, interval_label):
     bullish = []
     bearish = []
 
-    for ticker in coins:
+    for ticker, info in coins.items():
         closes, volumes = get_candles_coinbase(ticker, granularity)
         if closes is None:
             continue
@@ -201,14 +239,43 @@ def scan_timeframe(coins, interval_label):
 
         log.info(f"{ticker} [{interval_label}] {direction} ({candles_ago}c ago)")
 
+        entry = {
+            "ticker":     ticker,
+            "candles_ago": candles_ago,
+            "price":      info.get("price"),
+            "mcap":       info.get("mcap"),
+            "change_24h": info.get("change_24h"),
+            "volume_24h": info.get("volume_24h"),
+        }
+
         if direction == "BULLISH":
-            bullish.append(ticker)
+            bullish.append(entry)
         else:
-            bearish.append(ticker)
+            bearish.append(entry)
 
         time.sleep(0.05)
 
     return bullish, bearish
+
+
+# =========================
+# FORMAT COIN ENTRY
+# =========================
+def fmt_coin(entry, direction):
+    ticker = entry["ticker"]
+    price  = fmt_price(entry["price"]) if entry["price"] else "N/A"
+    mcap   = fmt_mcap(entry["mcap"]) if entry["mcap"] else "N/A"
+    change = fmt_change(entry["change_24h"])
+    vol    = fmt_vol(entry["volume_24h"]) if entry["volume_24h"] else "N/A"
+    cago   = entry["candles_ago"]
+    link   = tradingview_link(ticker)
+    emoji  = "📈" if direction == "BULLISH" else "📉"
+
+    return (
+        f"{emoji} <b>{ticker}</b> — {price}\n"
+        f"MCap: {mcap}  |  24h: {change}  |  Vol: {vol}\n"
+        f"Cross: {cago}c ago  |  <a href='{link}'>TradingView</a>"
+    )
 
 
 # =========================
@@ -222,20 +289,20 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
 
     if bullish_1h or bearish_1h:
         lines.append(f"\n⏱ <b>1H Timeframe</b>")
-        if bullish_1h:
-            lines.append(f"📈 <b>Bullish</b>\n{'  •  '.join(bullish_1h)}")
-        if bearish_1h:
-            lines.append(f"📉 <b>Bearish</b>\n{'  •  '.join(bearish_1h)}")
+        for entry in bullish_1h:
+            lines.append(fmt_coin(entry, "BULLISH"))
+        for entry in bearish_1h:
+            lines.append(fmt_coin(entry, "BEARISH"))
 
     if bullish_4h or bearish_4h:
         lines.append(f"\n⏱ <b>4H Timeframe</b>")
-        if bullish_4h:
-            lines.append(f"📈 <b>Bullish</b>\n{'  •  '.join(bullish_4h)}")
-        if bearish_4h:
-            lines.append(f"📉 <b>Bearish</b>\n{'  •  '.join(bearish_4h)}")
+        for entry in bullish_4h:
+            lines.append(fmt_coin(entry, "BULLISH"))
+        for entry in bearish_4h:
+            lines.append(fmt_coin(entry, "BEARISH"))
 
     lines.append(f"\n🕐 {now_str}")
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 # =========================
