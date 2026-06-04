@@ -17,7 +17,9 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MIN_MARKET_CAP   = 200_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
+VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 12
+CHECK_INTERVAL   = 300  # check every 5 minutes
 
 
 # =========================
@@ -109,10 +111,19 @@ def calc_ema(values, period):
 
 
 # =========================
-# FIND EMA CROSS IN LAST N CANDLES
-# no volume filter — fires on cross only
+# VOLUME ABOVE MA CHECK
 # =========================
-def check_signal(closes):
+def volume_above_ma(volumes, period=VOLUME_MA_PERIOD):
+    if len(volumes) < period + 1:
+        return False
+    ma = sum(volumes[-(period + 1):-1]) / period
+    return volumes[-1] > ma
+
+
+# =========================
+# CHECK SIGNAL — cross in last N candles + volume confirmation
+# =========================
+def check_signal(closes, volumes):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
 
@@ -126,11 +137,28 @@ def check_signal(closes):
         curr_slow = ema_slow[curr_idx]
 
         if prev_fast <= prev_slow and curr_fast > curr_slow:
-            return "BULLISH", i
+            if volume_above_ma(volumes):
+                return "BULLISH", i
         if prev_fast >= prev_slow and curr_fast < curr_slow:
-            return "BEARISH", i
+            if volume_above_ma(volumes):
+                return "BEARISH", i
 
     return None, None
+
+
+# =========================
+# CHECK IF A CANDLE JUST CLOSED
+# returns True if we are within 2 minutes after candle close
+# =========================
+def candle_just_closed(interval):
+    now = datetime.now(timezone.utc)
+    if interval == "1h":
+        # 1H closes at :00 every hour
+        return now.minute < 2
+    if interval == "4h":
+        # 4H closes at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+        return now.hour % 4 == 0 and now.minute < 2
+    return False
 
 
 # =========================
@@ -144,16 +172,16 @@ def scan_timeframe(coins, interval):
         ticker = coin.get("symbol", "").upper()
         symbol = ticker + "USDT"
 
-        closes, _ = get_candles(symbol, interval)
+        closes, volumes = get_candles(symbol, interval)
 
         if closes is None:
             symbol = ticker + "BTC"
-            closes, _ = get_candles(symbol, interval)
+            closes, volumes = get_candles(symbol, interval)
 
         if closes is None:
             continue
 
-        direction, candles_ago = check_signal(closes)
+        direction, candles_ago = check_signal(closes, volumes)
 
         if direction is None:
             continue
@@ -174,16 +202,6 @@ def scan_timeframe(coins, interval):
 # BUILD MESSAGE
 # =========================
 def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
-    has_signals = any([bullish_1h, bearish_1h, bullish_4h, bearish_4h])
-
-    if not has_signals:
-        return (
-            f"🔍 <b>EMA 12/21 Scan</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"No crosses found on 1H or 4H\n\n"
-            f"🕐 {now_str}"
-        )
-
     lines = [
         f"📊 <b>EMA 12/21 — Cross Alert</b>",
         f"━━━━━━━━━━━━━━━━",
@@ -208,52 +226,53 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
             lines.append(f"📉 <b>Bearish</b>\n{coins_str}")
 
     lines.append(f"\n🕐 {now_str}")
-
     return "\n".join(lines)
 
 
 # =========================
-# MAIN SCAN
+# MAIN LOOP — runs every 5 minutes, scans at candle close only
 # =========================
-def run_scan():
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    log.info(f"Scanning... {now_str}")
+def run():
+    log.info("Intraday EMA Scanner started.")
+    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning at 1H + 4H candle close 24/7.")
 
+    # refresh coins every hour
     coins = get_coins()
+    last_coin_refresh = datetime.now(timezone.utc)
 
-    if not coins:
-        log.error("No coins loaded, skipping scan.")
-        return
+    while True:
+        now = datetime.now(timezone.utc)
+        now_str = now.strftime("%Y-%m-%d %H:%M UTC")
 
-    bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
-    bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
+        # refresh coin list every hour
+        if (now - last_coin_refresh).total_seconds() > 3600:
+            coins = get_coins()
+            last_coin_refresh = now
 
-    msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
-    send_alert(msg)
+        bullish_1h, bearish_1h = [], []
+        bullish_4h, bearish_4h = [], []
 
-    log.info("Scan complete.")
+        if candle_just_closed("1h"):
+            log.info("1H candle closed — scanning...")
+            bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
 
+        if candle_just_closed("4h"):
+            log.info("4H candle closed — scanning...")
+            bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
 
-# =========================
-# HOURLY TIMER — runs at :05 every hour
-# =========================
-def wait_until_next_scan():
-    now = datetime.now(timezone.utc)
-    next_run = now.replace(minute=5, second=0, microsecond=0)
-    if now >= next_run:
-        next_run += timedelta(hours=1)
-    sleep_secs = (next_run - now).total_seconds()
-    log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
-    time.sleep(sleep_secs)
+        if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
+            msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
+            send_alert(msg)
+            log.info("Scan complete — signals found.")
+        else:
+            if candle_just_closed("1h") or candle_just_closed("4h"):
+                log.info("Scan complete — no signals.")
+
+        time.sleep(CHECK_INTERVAL)
 
 
 # =========================
 # START
 # =========================
 if __name__ == "__main__":
-    log.info("Intraday EMA Scanner started.")
-    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning 1H + 4H every hour. No volume filter.")
-    run_scan()
-    while True:
-        wait_until_next_scan()
-        run_scan()
+    run()
