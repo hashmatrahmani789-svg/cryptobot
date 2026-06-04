@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 import requests
@@ -10,26 +11,14 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-import os
-
 TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
-MIN_MARKET_CAP    = 100_000_000
+MIN_MARKET_CAP    = 200_000_000
 EMA_FAST          = 12
 EMA_SLOW          = 21
 VOLUME_MA_PERIOD  = 20
-CROSS_LOOKBACK    = 12
-CHECK_INTERVAL    = 300
-
-STABLECOINS = {
-    "USDT","USDC","BUSD","DAI","TUSD","USDP","GUSD","FRAX","LUSD","USDD",
-    "FDUSD","USDG","RLUSD","PYUSD","USDY","PAXG","USTB","USDAI","RUSD",
-    "USDA","USDM","CRVUSD","EURS","AUSD","NUSD","FRXUSD","DUSD","SATUSD",
-    "USDTB","EUTBL","EURC","EURCV","APXUSD","EURSAFO","USDS","USDE",
-    "SUSD","MUSD","CUSD","ZUSD","HUSD","OUSD","USDX","USDJ",
-    "USDN","USDQ","USDW","USDFL","USDH","USDL","USDV","USDZ"
-}
+CROSS_LOOKBACK    = 6
 
 
 # =========================
@@ -51,54 +40,16 @@ def send_alert(message):
 
 
 # =========================
-# FORMAT HELPERS
-# =========================
-def fmt_price(p):
-    if p >= 1000:
-        return f"${p:,.0f}"
-    elif p >= 1:
-        return f"${p:.2f}"
-    elif p >= 0.01:
-        return f"${p:.4f}"
-    else:
-        return f"${p:.6f}"
-
-def fmt_mcap(m):
-    if m >= 1_000_000_000:
-        return f"${m/1_000_000_000:.1f}B"
-    else:
-        return f"${m/1_000_000:.0f}M"
-
-def fmt_vol(v):
-    if v >= 1_000_000_000:
-        return f"${v/1_000_000_000:.1f}B"
-    else:
-        return f"${v/1_000_000:.0f}M"
-
-def fmt_change(c):
-    if c is None:
-        return "N/A"
-    sign = "+" if c >= 0 else ""
-    return f"{sign}{c:.1f}%"
-
-def tradingview_link(ticker):
-    return f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
-
-
-# =========================
-# COINGECKO — GET COINS WITH DETAILS
+# COINGECKO — GET COINS ABOVE $200M MCAP
 # =========================
 def get_coins():
-    coins = {}
+    coins = []
     page = 1
-    headers = {}
-    if COINGECKO_API_KEY:
-        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
-
     while True:
         try:
             r = requests.get(
                 "https://api.coingecko.com/api/v3/coins/markets",
+                headers={"x-cg-demo-api-key": COINGECKO_API_KEY},
                 params={
                     "vs_currency": "usd",
                     "order": "market_cap_desc",
@@ -106,80 +57,50 @@ def get_coins():
                     "page": page,
                     "sparkline": False
                 },
-                headers=headers,
                 timeout=20
             )
             data = r.json()
             if not isinstance(data, list):
-                log.error(f"CoinGecko bad response: {data}")
-                break
+                log.warning(f"CoinGecko bad response: {data}")
+                time.sleep(10)
+                continue
             if not data:
                 break
-            for c in data:
-                ticker = c["symbol"].upper()
-                mcap = c.get("market_cap", 0)
-                if mcap < MIN_MARKET_CAP:
-                    continue
-                if ticker in STABLECOINS or ticker.startswith("USD"):
-                    continue
-                coins[ticker] = {
-                    "price":      c.get("current_price"),
-                    "mcap":       mcap,
-                    "change_24h": c.get("price_change_percentage_24h"),
-                    "volume_24h": c.get("total_volume"),
-                }
+            filtered = [c for c in data if c.get("market_cap", 0) >= MIN_MARKET_CAP]
+            coins.extend(filtered)
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
             page += 1
-            time.sleep(2)
+            time.sleep(1.5)
         except Exception as e:
             log.error(f"CoinGecko error: {e}")
             break
-
     log.info(f"{len(coins)} coins loaded from CoinGecko")
     return coins
 
 
 # =========================
-# COINBASE — GET CANDLES WITH VOLUME
+# BINANCE — GET CANDLES
 # =========================
-def get_candles_coinbase(ticker, granularity_seconds):
-    product_id = f"{ticker}-USD"
+def get_candles(symbol, interval, limit=120):
     try:
-        closes = []
-        volumes = []
-        end = datetime.now(timezone.utc)
-
-        for _ in range(2):
-            start = end - timedelta(seconds=granularity_seconds * 300)
-            r = requests.get(
-                f"https://api.exchange.coinbase.com/products/{product_id}/candles",
-                params={
-                    "granularity": granularity_seconds,
-                    "start": start.isoformat(),
-                    "end": end.isoformat(),
-                },
-                timeout=10
-            )
-            data = r.json()
-            if not isinstance(data, list) or not data:
-                break
-            page_closes  = [float(c[4]) for c in reversed(data)]
-            page_volumes = [float(c[5]) for c in reversed(data)]
-            closes  = page_closes  + closes
-            volumes = page_volumes + volumes
-            end = start
-            time.sleep(0.1)
-
-        if len(closes) < 50:
+        r = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+            timeout=10
+        )
+        data = r.json()
+        if not isinstance(data, list) or len(data) < 50:
             return None, None
-        return closes[:-1], volumes[:-1]
+        closes  = [float(x[4]) for x in data[:-1]]
+        volumes = [float(x[5]) for x in data[:-1]]
+        return closes, volumes
     except:
         return None, None
 
 
 # =========================
-# EMA
+# EMA CALCULATION
 # =========================
 def calc_ema(values, period):
     k = 2 / (period + 1)
@@ -190,32 +111,60 @@ def calc_ema(values, period):
 
 
 # =========================
-# VOLUME ABOVE MA
+# VOLUME ABOVE MA CHECK
 # =========================
-def volume_above_ma(volumes, period=VOLUME_MA_PERIOD):
-    if len(volumes) < period + 1:
+def volume_above_ma(volumes, candle_index=-1, period=VOLUME_MA_PERIOD):
+    abs_index = len(volumes) + candle_index
+    if abs_index < period:
         return False
-    ma = sum(volumes[-(period + 1):-1]) / period
-    return volumes[-1] > ma
+    ma = sum(volumes[abs_index - period : abs_index]) / period
+    return volumes[abs_index] > ma
 
 
 # =========================
-# SIGNAL
+# FIND EMA CROSS
 # =========================
-def check_signal(closes, volumes):
+def find_cross(closes, lookback=CROSS_LOOKBACK):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
 
-    for i in range(1, CROSS_LOOKBACK + 1):
+    for i in range(1, lookback + 1):
         curr_idx = -i
         prev_idx = -(i + 1)
+        prev_fast = ema_fast[prev_idx]
+        prev_slow = ema_slow[prev_idx]
+        curr_fast = ema_fast[curr_idx]
+        curr_slow = ema_slow[curr_idx]
 
-        if ema_fast[prev_idx] <= ema_slow[prev_idx] and ema_fast[curr_idx] > ema_slow[curr_idx]:
-            if volume_above_ma(volumes):
-                return "BULLISH", i
-        if ema_fast[prev_idx] >= ema_slow[prev_idx] and ema_fast[curr_idx] < ema_slow[curr_idx]:
-            if volume_above_ma(volumes):
-                return "BEARISH", i
+        if prev_fast <= prev_slow and curr_fast > curr_slow:
+            return "BULLISH", i
+        if prev_fast >= prev_slow and curr_fast < curr_slow:
+            return "BEARISH", i
+
+    return None, None
+
+
+# =========================
+# SIGNAL LOGIC
+# Signal 1: fresh cross + volume above MA
+# Signal 2: cross 2-6 candles ago (low vol) + current vol now above MA
+# =========================
+def check_signal(closes, volumes):
+    direction, candles_ago = find_cross(closes)
+
+    if direction is None:
+        return None, None
+
+    if candles_ago == 1:
+        if volume_above_ma(volumes, candle_index=-1):
+            return direction, 1
+        else:
+            return None, None
+    else:
+        cross_vol_was_low = not volume_above_ma(volumes, candle_index=-candles_ago)
+        current_vol_high  = volume_above_ma(volumes, candle_index=-1)
+        if cross_vol_was_low and current_vol_high:
+            return direction, candles_ago
 
     return None, None
 
@@ -223,13 +172,18 @@ def check_signal(closes, volumes):
 # =========================
 # SCAN ONE TIMEFRAME
 # =========================
-def scan_timeframe(coins, interval_label):
-    granularity = 3600 if interval_label == "1h" else 14400
+def scan_timeframe(coins, interval):
     bullish = []
     bearish = []
 
-    for ticker, info in coins.items():
-        closes, volumes = get_candles_coinbase(ticker, granularity)
+    for coin in coins:
+        ticker = coin.get("symbol", "").upper()
+        symbol = ticker + "USDT"
+
+        closes, volumes = get_candles(symbol, interval)
+        if closes is None:
+            symbol = ticker + "BTC"
+            closes, volumes = get_candles(symbol, interval)
         if closes is None:
             continue
 
@@ -237,21 +191,13 @@ def scan_timeframe(coins, interval_label):
         if direction is None:
             continue
 
-        log.info(f"{ticker} [{interval_label}] {direction} ({candles_ago}c ago)")
-
-        entry = {
-            "ticker":      ticker,
-            "candles_ago": candles_ago,
-            "price":       info.get("price"),
-            "mcap":        info.get("mcap"),
-            "change_24h":  info.get("change_24h"),
-            "volume_24h":  info.get("volume_24h"),
-        }
+        signal_type = "S1" if candles_ago == 1 else f"S2({candles_ago})"
+        log.info(f"{symbol} [{interval}] {direction} {signal_type}")
 
         if direction == "BULLISH":
-            bullish.append(entry)
+            bullish.append(ticker)
         else:
-            bearish.append(entry)
+            bearish.append(ticker)
 
         time.sleep(0.05)
 
@@ -259,113 +205,73 @@ def scan_timeframe(coins, interval_label):
 
 
 # =========================
-# FORMAT COIN ENTRY
-# =========================
-def fmt_coin(entry, direction):
-    ticker = entry["ticker"]
-    price  = fmt_price(entry["price"]) if entry["price"] else "N/A"
-    mcap   = fmt_mcap(entry["mcap"]) if entry["mcap"] else "N/A"
-    change = fmt_change(entry["change_24h"])
-    vol    = fmt_vol(entry["volume_24h"]) if entry["volume_24h"] else "N/A"
-    cago   = entry["candles_ago"]
-    link   = tradingview_link(ticker)
-    emoji  = "📈" if direction == "BULLISH" else "📉"
-    label  = "🟢 BULLISH" if direction == "BULLISH" else "🔴 BEARISH"
-
-    return (
-        f"{emoji} <b>{ticker}</b> — {price}  {label}\n"
-        f"MCap: {mcap}  |  24h: {change}  |  Vol: {vol}\n"
-        f"Cross: {cago}c ago  |  <a href='{link}'>TradingView</a>"
-    )
-
-
-# =========================
 # BUILD MESSAGE
 # =========================
 def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
-    lines = [
-        f"📊 <b>EMA 12/21 — Cross Alert</b>",
-        f"━━━━━━━━━━━━━━━━",
-    ]
+    has_signals = any([bullish_1h, bearish_1h, bullish_4h, bearish_4h])
+
+    if not has_signals:
+        return (
+            f"🔍 <b>EMA 12/21 Scan</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"No crosses found on 1H or 4H\n\n"
+            f"🕐 {now_str}"
+        )
+
+    lines = ["📊 <b>EMA 12/21 — Cross Alert</b>", "━━━━━━━━━━━━━━━━"]
 
     if bullish_1h or bearish_1h:
-        lines.append(f"\n⏱ <b>1H Timeframe</b>")
-        for entry in bullish_1h:
-            lines.append(fmt_coin(entry, "BULLISH"))
-        for entry in bearish_1h:
-            lines.append(fmt_coin(entry, "BEARISH"))
+        lines.append("\n⏱ <b>1H Timeframe</b>")
+        if bullish_1h:
+            lines.append(f"📈 <b>Bullish</b>\n" + "  •  ".join(bullish_1h))
+        if bearish_1h:
+            lines.append(f"📉 <b>Bearish</b>\n" + "  •  ".join(bearish_1h))
 
     if bullish_4h or bearish_4h:
-        lines.append(f"\n⏱ <b>4H Timeframe</b>")
-        for entry in bullish_4h:
-            lines.append(fmt_coin(entry, "BULLISH"))
-        for entry in bearish_4h:
-            lines.append(fmt_coin(entry, "BEARISH"))
+        lines.append("\n⏱ <b>4H Timeframe</b>")
+        if bullish_4h:
+            lines.append(f"📈 <b>Bullish</b>\n" + "  •  ".join(bullish_4h))
+        if bearish_4h:
+            lines.append(f"📉 <b>Bearish</b>\n" + "  •  ".join(bearish_4h))
 
     lines.append(f"\n🕐 {now_str}")
-    return "\n\n".join(lines)
+    return "\n".join(lines)
 
 
 # =========================
-# SCAN
+# MAIN SCAN
 # =========================
-def do_scan(coins, label=""):
+def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    if label:
-        log.info(f"{label} scanning...")
-
+    log.info(f"Scanning... {now_str}")
+    coins = get_coins()
     bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
     bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
-
-    if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
-        msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
-        send_alert(msg)
-        log.info("Signals sent.")
-    else:
-        log.info("No signals.")
+    msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
+    send_alert(msg)
+    log.info("Scan complete.")
 
 
 # =========================
-# CANDLE JUST CLOSED
+# HOURLY TIMER — runs at :05 every hour
 # =========================
-def candle_just_closed(interval):
+def wait_until_next_scan():
     now = datetime.now(timezone.utc)
-    if interval == "1h":
-        return now.minute < 2
-    if interval == "4h":
-        return now.hour % 4 == 0 and now.minute < 2
-    return False
+    next_run = now.replace(minute=5, second=0, microsecond=0)
+    if now >= next_run:
+        next_run += timedelta(hours=1)
+    sleep_secs = (next_run - now).total_seconds()
+    log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
+    time.sleep(sleep_secs)
 
 
 # =========================
-# MAIN LOOP
+# START
 # =========================
-def run():
-    log.info("1H 4H EMA Cross Scanner started.")
-    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nCoinGecko + Coinbase. Volume filter ON. Scanning at candle close.")
-
-    coins = get_coins()
-    last_coin_refresh = datetime.now(timezone.utc)
-
-    do_scan(coins, label="Startup")
-
-    while True:
-        time.sleep(CHECK_INTERVAL)
-        now = datetime.now(timezone.utc)
-
-        if (now - last_coin_refresh).total_seconds() > 3600:
-            coins = get_coins()
-            last_coin_refresh = now
-
-        intervals = []
-        if candle_just_closed("1h"):
-            intervals.append("1h")
-        if candle_just_closed("4h"):
-            intervals.append("4h")
-
-        if intervals:
-            do_scan(coins, label="+".join(i.upper() for i in intervals))
-
-
 if __name__ == "__main__":
-    run()
+    log.info("Intraday EMA Scanner started.")
+    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning 1H + 4H every hour.")
+    run_scan()
+    while True:
+        wait_until_next_scan()
+        run_scan()
