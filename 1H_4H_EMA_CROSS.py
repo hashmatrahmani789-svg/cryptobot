@@ -69,7 +69,7 @@ def send_alert(message):
 # =========================
 # BINANCE
 # =========================
-def get_candles(symbol, interval, limit=200):
+def get_candles(symbol, interval, limit=500):
     try:
         r = requests.get(
             "https://api.binance.com/api/v3/klines",
