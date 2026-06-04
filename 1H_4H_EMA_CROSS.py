@@ -89,7 +89,7 @@ def tradingview_link(ticker):
 # COINGECKO — GET COINS WITH DETAILS
 # =========================
 def get_coins():
-    coins = {}  # ticker -> {price, mcap, change_24h, volume_24h}
+    coins = {}
     page = 1
     headers = {}
     if COINGECKO_API_KEY:
@@ -240,12 +240,12 @@ def scan_timeframe(coins, interval_label):
         log.info(f"{ticker} [{interval_label}] {direction} ({candles_ago}c ago)")
 
         entry = {
-            "ticker":     ticker,
+            "ticker":      ticker,
             "candles_ago": candles_ago,
-            "price":      info.get("price"),
-            "mcap":       info.get("mcap"),
-            "change_24h": info.get("change_24h"),
-            "volume_24h": info.get("volume_24h"),
+            "price":       info.get("price"),
+            "mcap":        info.get("mcap"),
+            "change_24h":  info.get("change_24h"),
+            "volume_24h":  info.get("volume_24h"),
         }
 
         if direction == "BULLISH":
@@ -270,9 +270,10 @@ def fmt_coin(entry, direction):
     cago   = entry["candles_ago"]
     link   = tradingview_link(ticker)
     emoji  = "📈" if direction == "BULLISH" else "📉"
+    label  = "🟢 BULLISH" if direction == "BULLISH" else "🔴 BEARISH"
 
     return (
-        f"{emoji} <b>{ticker}</b> — {price}\n"
+        f"{emoji} <b>{ticker}</b> — {price}  {label}\n"
         f"MCap: {mcap}  |  24h: {change}  |  Vol: {vol}\n"
         f"Cross: {cago}c ago  |  <a href='{link}'>TradingView</a>"
     )
