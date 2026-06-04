@@ -190,12 +190,7 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
 # CANDLE JUST CLOSED CHECK
 # =========================
 def candle_just_closed(interval):
-    now = datetime.now(timezone.utc)
-    if interval == "1h":
-        return now.minute < 2
-    if interval == "4h":
-        return now.hour % 4 == 0 and now.minute < 2
-    return False
+    return True
 
 
 # =========================
