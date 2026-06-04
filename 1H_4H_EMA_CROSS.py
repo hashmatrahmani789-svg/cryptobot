@@ -18,8 +18,7 @@ MIN_MARKET_CAP   = 200_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
 VOLUME_MA_PERIOD = 20
-CROSS_LOOKBACK   = 6
-
+CROSS_LOOKBACK   = 12
 
 # =========================
 # TELEGRAM
