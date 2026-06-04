@@ -16,7 +16,7 @@ TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
 MIN_MARKET_CAP    = 200_000_000
 EMA_PERIOD        = 50
-SCAN_INTERVAL_M   = 15
+SCAN_INTERVAL_M   = 60  # scan every hour (15m can be added later)
 
 
 # =========================
@@ -41,7 +41,7 @@ def send_alert(message):
 # COINGECKO — GET COINS ABOVE $200M MCAP
 # =========================
 def get_coins():
-    coins = []
+    coins = {}
     page = 1
     while True:
         try:
@@ -64,8 +64,15 @@ def get_coins():
                 continue
             if not data:
                 break
-            filtered = [c for c in data if c.get("market_cap", 0) >= MIN_MARKET_CAP]
-            coins.extend(filtered)
+            for c in data:
+                mcap = c.get("market_cap", 0)
+                if mcap >= MIN_MARKET_CAP:
+                    ticker = c.get("symbol", "").upper()
+                    coins[ticker] = {
+                        "market_cap": mcap,
+                        "price_change_24h": c.get("price_change_percentage_24h", 0),
+                        "current_price": c.get("current_price", 0)
+                    }
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
                 break
             page += 1
@@ -79,13 +86,11 @@ def get_coins():
 
 # =========================
 # COINBASE — GET CANDLES
-# granularity: FIFTEEN_MINUTE, ONE_HOUR, FOUR_HOUR
 # =========================
 def get_candles(ticker, interval):
     granularity_map = {
-        "15m": "FIFTEEN_MINUTE",
-        "1h":  "ONE_HOUR",
-        "4h":  "FOUR_HOUR"
+        "1h": "ONE_HOUR",
+        "4h": "FOUR_HOUR"
     }
     granularity = granularity_map.get(interval)
     if not granularity:
@@ -96,10 +101,7 @@ def get_candles(ticker, interval):
     try:
         r = requests.get(
             f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
-            params={
-                "granularity": granularity,
-                "limit": 120
-            },
+            params={"granularity": granularity, "limit": 120},
             timeout=10
         )
         data = r.json()
@@ -107,11 +109,7 @@ def get_candles(ticker, interval):
         if not candles or len(candles) < 60:
             return None
 
-        # Coinbase returns newest first — reverse to oldest first
-        candles = list(reversed(candles))
-
-        # exclude live candle
-        candles = candles[:-1]
+        candles = list(reversed(candles))[:-1]  # oldest first, exclude live candle
 
         return [
             {
@@ -124,7 +122,7 @@ def get_candles(ticker, interval):
         ]
 
     except Exception as e:
-        log.error(f"Coinbase candle error {product_id}: {e}")
+        log.error(f"Coinbase error {product_id}: {e}")
         return None
 
 
@@ -140,94 +138,88 @@ def calc_ema(values, period):
 
 
 # =========================
-# SIGNAL 1 — WICK TOUCH
+# SIGNAL LOGIC
+# Step 1 — 4H candle touches the 50 EMA (wick or body)
+# Step 2 — 1H candle closes above (bullish) or below (bearish) the 50 EMA
+# Both must be true for an alert
 # =========================
-def check_wick_touch(candles, ema):
-    c   = candles[-1]
-    e   = ema[-1]
-    tol = e * 0.002
+def check_4h_touch(candles_4h, ema_4h):
+    """Check if last closed 4H candle touched the 50 EMA"""
+    c = candles_4h[-1]
+    e = ema_4h[-1]
+    tol = e * 0.003  # 0.3% tolerance
 
-    if c["low"] <= e + tol and c["close"] > e:
+    # wick touched or body touched EMA
+    touched = c["low"] <= e + tol and c["high"] >= e - tol
+    return touched
+
+
+def check_1h_confirmation(candles_1h, ema_1h):
+    """Check if last closed 1H candle closed above or below 50 EMA"""
+    c = candles_1h[-1]
+    e = ema_1h[-1]
+
+    if c["close"] > e:
         return "BULLISH"
-    if c["high"] >= e - tol and c["close"] < e:
+    if c["close"] < e:
         return "BEARISH"
     return None
 
 
 # =========================
-# SIGNAL 2 — PRICE HELD
+# FORMAT MARKET CAP
 # =========================
-def check_held(candles, ema):
-    c   = candles[-1]
-    e   = ema[-1]
-    tol = e * 0.005
-
-    if c["close"] >= e and c["close"] <= e + tol and c["open"] >= e:
-        return "BULLISH"
-    if c["close"] <= e and c["close"] >= e - tol and c["open"] <= e:
-        return "BEARISH"
-    return None
+def fmt_mcap(mcap):
+    if mcap >= 1_000_000_000:
+        return f"${mcap/1_000_000_000:.1f}B"
+    return f"${mcap/1_000_000:.0f}M"
 
 
 # =========================
-# SIGNAL 3 — RECLAIM
+# SCAN ALL COINS
 # =========================
-def check_reclaim(candles, ema):
-    prev   = candles[-2]
-    curr   = candles[-1]
-    e_prev = ema[-2]
-    e_curr = ema[-1]
-
-    if prev["close"] < e_prev and curr["close"] > e_curr:
-        return "BULLISH"
-    if prev["close"] > e_prev and curr["close"] < e_curr:
-        return "BEARISH"
-    return None
-
-
-# =========================
-# CHECK ALL 3 SIGNALS
-# =========================
-def check_coin(candles):
-    closes = [c["close"] for c in candles]
-    ema    = calc_ema(closes, EMA_PERIOD)
-
-    results = []
-    wick    = check_wick_touch(candles, ema)
-    held    = check_held(candles, ema)
-    reclaim = check_reclaim(candles, ema)
-
-    if wick:
-        results.append((wick, "wick"))
-    if held:
-        results.append((held, "held"))
-    if reclaim:
-        results.append((reclaim, "reclaim"))
-
-    return results
-
-
-# =========================
-# SCAN ONE TIMEFRAME
-# =========================
-def scan_timeframe(coins, interval):
+def scan_coins(coins):
     bullish = []
     bearish = []
 
-    for coin in coins:
-        ticker = coin.get("symbol", "").upper()
-
-        candles = get_candles(ticker, interval)
-        if candles is None:
+    for ticker, info in coins.items():
+        candles_4h = get_candles(ticker, "4h")
+        if candles_4h is None:
             continue
 
-        signals = check_coin(candles)
-        for direction, label in signals:
-            log.info(f"{ticker} [{interval}] {direction} ({label})")
-            if direction == "BULLISH":
-                bullish.append((ticker, label))
-            else:
-                bearish.append((ticker, label))
+        candles_1h = get_candles(ticker, "1h")
+        if candles_1h is None:
+            continue
+
+        closes_4h = [c["close"] for c in candles_4h]
+        closes_1h = [c["close"] for c in candles_1h]
+
+        ema_4h = calc_ema(closes_4h, EMA_PERIOD)
+        ema_1h = calc_ema(closes_1h, EMA_PERIOD)
+
+        # Step 1 — 4H must touch the EMA
+        if not check_4h_touch(candles_4h, ema_4h):
+            continue
+
+        # Step 2 — 1H must confirm direction
+        direction = check_1h_confirmation(candles_1h, ema_1h)
+        if direction is None:
+            continue
+
+        log.info(f"{ticker} EMA50 touch confirmed — {direction}")
+
+        entry = {
+            "ticker":     ticker,
+            "mcap":       fmt_mcap(info["market_cap"]),
+            "change_24h": info["price_change_24h"],
+            "price":      info["current_price"],
+            "tv_link":    f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USDT"
+        }
+
+        if direction == "BULLISH":
+            bullish.append(entry)
+        else:
+            bearish.append(entry)
 
         time.sleep(0.1)
 
@@ -235,33 +227,40 @@ def scan_timeframe(coins, interval):
 
 
 # =========================
+# FORMAT COIN LINE
+# =========================
+def fmt_coin(e):
+    change = e["change_24h"]
+    change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
+    return (
+        f"<b>{e['ticker']}</b> — {e['mcap']} | 24h: {change_str}\n"
+        f"<a href='{e['tv_link']}'>📈 TradingView</a>"
+    )
+
+
+# =========================
 # BUILD MESSAGE
 # =========================
-def build_message(results_by_tf, now_str):
-    has_signals = any(bull or bear for bull, bear in results_by_tf.values())
-
-    if not has_signals:
+def build_message(bullish, bearish, now_str):
+    if not bullish and not bearish:
         return (
             f"🔍 <b>EMA 50 Scan</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"No interactions found on 15M, 1H or 4H\n\n"
+            f"No 4H touches confirmed on 1H\n\n"
             f"🕐 {now_str}"
         )
 
-    lines = ["🎯 <b>EMA 50 — Interaction Alert</b>", "━━━━━━━━━━━━━━━━"]
-    tf_labels = {"15m": "15M", "1h": "1H", "4h": "4H"}
+    lines = ["🎯 <b>EMA 50 — Touch Alert</b>", "━━━━━━━━━━━━━━━━"]
 
-    for interval, (bullish, bearish) in results_by_tf.items():
-        if not bullish and not bearish:
-            continue
-        label = tf_labels.get(interval, interval.upper())
-        lines.append(f"\n⏱ <b>{label} Timeframe</b>")
-        if bullish:
-            coins_str = "  •  ".join(f"{t} <i>({s})</i>" for t, s in bullish)
-            lines.append(f"📈 <b>Bullish</b>\n{coins_str}")
-        if bearish:
-            coins_str = "  •  ".join(f"{t} <i>({s})</i>" for t, s in bearish)
-            lines.append(f"📉 <b>Bearish</b>\n{coins_str}")
+    if bullish:
+        lines.append("\n📈 <b>Bullish</b> — 4H touched + 1H closed above")
+        for e in bullish:
+            lines.append(fmt_coin(e))
+
+    if bearish:
+        lines.append("\n📉 <b>Bearish</b> — 4H touched + 1H closed below")
+        for e in bearish:
+            lines.append(fmt_coin(e))
 
     lines.append(f"\n🕐 {now_str}")
     return "\n".join(lines)
@@ -274,26 +273,20 @@ def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
     coins = get_coins()
-    results = {}
-    for interval in ["15m", "1h", "4h"]:
-        bullish, bearish = scan_timeframe(coins, interval)
-        results[interval] = (bullish, bearish)
-    msg = build_message(results, now_str)
+    bullish, bearish = scan_coins(coins)
+    msg = build_message(bullish, bearish, now_str)
     send_alert(msg)
     log.info("Scan complete.")
 
 
 # =========================
-# 15 MINUTE TIMER
+# HOURLY TIMER — runs at :05 every hour
 # =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
-    minutes = now.minute
-    next_minute = (minutes // SCAN_INTERVAL_M + 1) * SCAN_INTERVAL_M
-    if next_minute >= 60:
-        next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    else:
-        next_run = now.replace(minute=next_minute, second=0, microsecond=0)
+    next_run = now.replace(minute=5, second=0, microsecond=0)
+    if now >= next_run:
+        next_run += timedelta(hours=1)
     sleep_secs = (next_run - now).total_seconds()
     log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
     time.sleep(sleep_secs)
@@ -303,8 +296,8 @@ def wait_until_next_scan():
 # START
 # =========================
 if __name__ == "__main__":
-    log.info("EMA 50 Interaction Scanner started.")
-    send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 15M + 1H + 4H every 15 minutes.")
+    log.info("EMA 50 Touch Scanner started.")
+    send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 4H touch + 1H confirmation every hour.")
     run_scan()
     while True:
         wait_until_next_scan()
