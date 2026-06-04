@@ -17,9 +17,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MIN_MARKET_CAP   = 200_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
-VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 12
-CHECK_INTERVAL   = 300  # check every 5 minutes
+CHECK_INTERVAL   = 300
 
 
 # =========================
@@ -41,7 +40,7 @@ def send_alert(message):
 
 
 # =========================
-# COINGECKO — GET COINS ABOVE $200M MCAP
+# COINGECKO
 # =========================
 def get_coins():
     coins = []
@@ -80,7 +79,7 @@ def get_coins():
 
 
 # =========================
-# BINANCE — GET CANDLES
+# BINANCE
 # =========================
 def get_candles(symbol, interval, limit=120):
     try:
@@ -91,16 +90,14 @@ def get_candles(symbol, interval, limit=120):
         )
         data = r.json()
         if not isinstance(data, list) or len(data) < 50:
-            return None, None
-        closes  = [float(x[4]) for x in data[:-1]]
-        volumes = [float(x[5]) for x in data[:-1]]
-        return closes, volumes
+            return None
+        return [float(x[4]) for x in data[:-1]]
     except:
-        return None, None
+        return None
 
 
 # =========================
-# EMA CALCULATION
+# EMA
 # =========================
 def calc_ema(values, period):
     k = 2 / (period + 1)
@@ -111,19 +108,9 @@ def calc_ema(values, period):
 
 
 # =========================
-# VOLUME ABOVE MA CHECK
+# SIGNAL — cross only, no volume filter
 # =========================
-def volume_above_ma(volumes, period=VOLUME_MA_PERIOD):
-    if len(volumes) < period + 1:
-        return False
-    ma = sum(volumes[-(period + 1):-1]) / period
-    return volumes[-1] > ma
-
-
-# =========================
-# CHECK SIGNAL
-# =========================
-def check_signal(closes, volumes):
+def check_signal(closes):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
 
@@ -131,17 +118,10 @@ def check_signal(closes, volumes):
         curr_idx = -i
         prev_idx = -(i + 1)
 
-        prev_fast = ema_fast[prev_idx]
-        prev_slow = ema_slow[prev_idx]
-        curr_fast = ema_fast[curr_idx]
-        curr_slow = ema_slow[curr_idx]
-
-        if prev_fast <= prev_slow and curr_fast > curr_slow:
-            if volume_above_ma(volumes):
-                return "BULLISH", i
-        if prev_fast >= prev_slow and curr_fast < curr_slow:
-            if volume_above_ma(volumes):
-                return "BEARISH", i
+        if ema_fast[prev_idx] <= ema_slow[prev_idx] and ema_fast[curr_idx] > ema_slow[curr_idx]:
+            return "BULLISH", i
+        if ema_fast[prev_idx] >= ema_slow[prev_idx] and ema_fast[curr_idx] < ema_slow[curr_idx]:
+            return "BEARISH", i
 
     return None, None
 
@@ -157,17 +137,13 @@ def scan_timeframe(coins, interval):
         ticker = coin.get("symbol", "").upper()
         symbol = ticker + "USDT"
 
-        closes, volumes = get_candles(symbol, interval)
-
+        closes = get_candles(symbol, interval)
         if closes is None:
-            symbol = ticker + "BTC"
-            closes, volumes = get_candles(symbol, interval)
-
+            closes = get_candles(ticker + "BTC", interval)
         if closes is None:
             continue
 
-        direction, candles_ago = check_signal(closes, volumes)
-
+        direction, candles_ago = check_signal(closes)
         if direction is None:
             continue
 
@@ -195,45 +171,23 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
     if bullish_1h or bearish_1h:
         lines.append(f"\n⏱ <b>1H Timeframe</b>")
         if bullish_1h:
-            coins_str = "  •  ".join(bullish_1h)
-            lines.append(f"📈 <b>Bullish</b>\n{coins_str}")
+            lines.append(f"📈 <b>Bullish</b>\n{'  •  '.join(bullish_1h)}")
         if bearish_1h:
-            coins_str = "  •  ".join(bearish_1h)
-            lines.append(f"📉 <b>Bearish</b>\n{coins_str}")
+            lines.append(f"📉 <b>Bearish</b>\n{'  •  '.join(bearish_1h)}")
 
     if bullish_4h or bearish_4h:
         lines.append(f"\n⏱ <b>4H Timeframe</b>")
         if bullish_4h:
-            coins_str = "  •  ".join(bullish_4h)
-            lines.append(f"📈 <b>Bullish</b>\n{coins_str}")
+            lines.append(f"📈 <b>Bullish</b>\n{'  •  '.join(bullish_4h)}")
         if bearish_4h:
-            coins_str = "  •  ".join(bearish_4h)
-            lines.append(f"📉 <b>Bearish</b>\n{coins_str}")
+            lines.append(f"📉 <b>Bearish</b>\n{'  •  '.join(bearish_4h)}")
 
     lines.append(f"\n🕐 {now_str}")
     return "\n".join(lines)
 
 
 # =========================
-# STARTUP SCAN — catches any crosses in last 12 candles immediately
-# =========================
-def startup_scan(coins):
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    log.info("Startup scan — checking last 12 candles...")
-
-    bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
-    bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
-
-    if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
-        msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
-        send_alert(msg)
-        log.info("Startup scan complete — signals found.")
-    else:
-        log.info("Startup scan complete — no signals.")
-
-
-# =========================
-# CHECK IF A CANDLE JUST CLOSED
+# CANDLE JUST CLOSED CHECK
 # =========================
 def candle_just_closed(interval):
     now = datetime.now(timezone.utc)
@@ -242,6 +196,29 @@ def candle_just_closed(interval):
     if interval == "4h":
         return now.hour % 4 == 0 and now.minute < 2
     return False
+
+
+# =========================
+# SCAN
+# =========================
+def do_scan(coins, intervals, label=""):
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    if label:
+        log.info(f"{label} scanning...")
+
+    bullish_1h = bearish_1h = bullish_4h = bearish_4h = []
+
+    if "1h" in intervals:
+        bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
+    if "4h" in intervals:
+        bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
+
+    if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
+        msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
+        send_alert(msg)
+        log.info("Signals sent.")
+    else:
+        log.info("No signals.")
 
 
 # =========================
@@ -254,41 +231,27 @@ def run():
     coins = get_coins()
     last_coin_refresh = datetime.now(timezone.utc)
 
-    # scan immediately on startup
-    startup_scan(coins)
+    # startup scan — catch any recent crosses
+    do_scan(coins, ["1h", "4h"], label="Startup")
 
     while True:
         now = datetime.now(timezone.utc)
-        now_str = now.strftime("%Y-%m-%d %H:%M UTC")
 
         if (now - last_coin_refresh).total_seconds() > 3600:
             coins = get_coins()
             last_coin_refresh = now
 
-        bullish_1h, bearish_1h = [], []
-        bullish_4h, bearish_4h = [], []
-
+        intervals = []
         if candle_just_closed("1h"):
-            log.info("1H candle closed — scanning...")
-            bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
-
+            intervals.append("1h")
         if candle_just_closed("4h"):
-            log.info("4H candle closed — scanning...")
-            bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
+            intervals.append("4h")
 
-        if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
-            msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
-            send_alert(msg)
-            log.info("Signals sent.")
-        else:
-            if candle_just_closed("1h") or candle_just_closed("4h"):
-                log.info("Scan complete — no signals.")
+        if intervals:
+            do_scan(coins, intervals, label="+".join(i.upper() for i in intervals))
 
         time.sleep(CHECK_INTERVAL)
 
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     run()
