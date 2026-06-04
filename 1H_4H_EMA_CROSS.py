@@ -12,21 +12,25 @@ log = logging.getLogger(__name__)
 
 import os
 
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
-MIN_MARKET_CAP   = 100_000_000
-EMA_FAST         = 12
-EMA_SLOW         = 21
-CROSS_LOOKBACK   = 12
-CHECK_INTERVAL   = 300
+MIN_MARKET_CAP    = 100_000_000
+EMA_FAST          = 12
+EMA_SLOW          = 21
+VOLUME_MA_PERIOD  = 20
+CROSS_LOOKBACK    = 12
+CHECK_INTERVAL    = 300
 
 STABLECOINS = {
     "USDT","USDC","BUSD","DAI","TUSD","USDP","GUSD","FRAX","LUSD","USDD",
     "FDUSD","USDG","RLUSD","PYUSD","USDY","PAXG","USTB","USDAI","RUSD",
     "USDA","USDM","CRVUSD","EURS","AUSD","NUSD","FRXUSD","DUSD","SATUSD",
-    "USDTB","EUTBL","EURC","EURCV","APXUSD","EURSAFO"
+    "USDTB","EUTBL","EURC","EURCV","APXUSD","EURSAFO","USDS","USDE",
+    "SUSD","TUSD","MUSD","CUSD","ZUSD","HUSD","OUSD","USDX","USDJ",
+    "USDN","USDQ","USDW","USDFL","USDH","USDL","USDV","USDZ"
 }
+
 
 # =========================
 # TELEGRAM
@@ -47,8 +51,7 @@ def send_alert(message):
 
 
 # =========================
-# COINGECKO — GET COINS ABOVE $100M MCAP
-# called once per hour only
+# COINGECKO — GET COINS
 # =========================
 def get_coins():
     coins = []
@@ -81,6 +84,7 @@ def get_coins():
                 c["symbol"].upper() for c in data
                 if c.get("market_cap", 0) >= MIN_MARKET_CAP
                 and c["symbol"].upper() not in STABLECOINS
+                and not c["symbol"].upper().startswith("USD")
             ]
             coins.extend(filtered)
             if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
@@ -97,13 +101,13 @@ def get_coins():
 
 # =========================
 # COINBASE — GET CANDLES
-# granularity: 3600=1h, 14400=4h
-# max 300 per request — fetch 2 pages = 600 candles
+# returns (closes, volumes) or (None, None)
 # =========================
 def get_candles_coinbase(ticker, granularity_seconds):
     product_id = f"{ticker}-USD"
     try:
         closes = []
+        volumes = []
         end = datetime.now(timezone.utc)
 
         for _ in range(2):
@@ -120,17 +124,20 @@ def get_candles_coinbase(ticker, granularity_seconds):
             data = r.json()
             if not isinstance(data, list) or not data:
                 break
-            # coinbase returns newest first: [time, low, high, open, close, volume]
-            page_closes = [float(c[4]) for c in reversed(data)]
-            closes = page_closes + closes
+            # coinbase: [time, low, high, open, close, volume] newest first
+            page_closes  = [float(c[4]) for c in reversed(data)]
+            page_volumes = [float(c[5]) for c in reversed(data)]
+            closes  = page_closes  + closes
+            volumes = page_volumes + volumes
             end = start
             time.sleep(0.1)
 
         if len(closes) < 50:
-            return None
-        return closes[:-1]  # exclude live candle
+            return None, None
+        # exclude live candle
+        return closes[:-1], volumes[:-1]
     except:
-        return None
+        return None, None
 
 
 # =========================
@@ -145,9 +152,19 @@ def calc_ema(values, period):
 
 
 # =========================
-# SIGNAL
+# VOLUME ABOVE MA
 # =========================
-def check_signal(closes):
+def volume_above_ma(volumes, period=VOLUME_MA_PERIOD):
+    if len(volumes) < period + 1:
+        return False
+    ma = sum(volumes[-(period + 1):-1]) / period
+    return volumes[-1] > ma
+
+
+# =========================
+# SIGNAL — cross within lookback + volume confirmation
+# =========================
+def check_signal(closes, volumes):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
 
@@ -156,9 +173,11 @@ def check_signal(closes):
         prev_idx = -(i + 1)
 
         if ema_fast[prev_idx] <= ema_slow[prev_idx] and ema_fast[curr_idx] > ema_slow[curr_idx]:
-            return "BULLISH", i
+            if volume_above_ma(volumes):
+                return "BULLISH", i
         if ema_fast[prev_idx] >= ema_slow[prev_idx] and ema_fast[curr_idx] < ema_slow[curr_idx]:
-            return "BEARISH", i
+            if volume_above_ma(volumes):
+                return "BEARISH", i
 
     return None, None
 
@@ -172,11 +191,11 @@ def scan_timeframe(coins, interval_label):
     bearish = []
 
     for ticker in coins:
-        closes = get_candles_coinbase(ticker, granularity)
+        closes, volumes = get_candles_coinbase(ticker, granularity)
         if closes is None:
             continue
 
-        direction, candles_ago = check_signal(closes)
+        direction, candles_ago = check_signal(closes, volumes)
         if direction is None:
             continue
 
@@ -255,7 +274,7 @@ def candle_just_closed(interval):
 # =========================
 def run():
     log.info("1H 4H EMA Cross Scanner started.")
-    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nCoinGecko filter + Coinbase candles. Scanning at candle close.")
+    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nCoinGecko + Coinbase. Volume filter ON. Scanning at candle close.")
 
     coins = get_coins()
     last_coin_refresh = datetime.now(timezone.utc)
@@ -266,7 +285,6 @@ def run():
         time.sleep(CHECK_INTERVAL)
         now = datetime.now(timezone.utc)
 
-        # refresh coins once per hour
         if (now - last_coin_refresh).total_seconds() > 3600:
             coins = get_coins()
             last_coin_refresh = now
