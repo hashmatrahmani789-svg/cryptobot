@@ -1,7 +1,7 @@
 import time
 import logging
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,39 +14,19 @@ import os
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
+MIN_MARKET_CAP   = 100_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
 CROSS_LOOKBACK   = 12
 CHECK_INTERVAL   = 300
 
-COINS = [
-    'BTC','ETH','BNB','XRP','SOL','TRX','HYPE','DOGE','LEO','ZEC','RAIN','ADA','XLM','XMR',
-    'CC','LINK','LAB','WBT','BCH','TON','HBAR','LTC','AVAX','SUI','NEAR','SHI','XAUT','CRO',
-    'TAO','WLFI','MNT','ONDO','DOT','ASTER','WLD','UNI','OKB','ICP','PI','BGB','PEPE','ETC',
-    'AAVE','QNT','BCAP','RENDER','POL','ALGO','ATOM','ENA','FIL','APT','INJ','FLR','XDC',
-    'PUMP','JUP','ARB','FET','HASH','VET','DASH','TRUMP','VIRTUAL','PENGU','KITE','BONK',
-    'CAKE','PRIME','LIT','LUNC','STX','SEI','KAU','SUN','AERO','TIA','XTZ','CRV','ZRO',
-    'ETHFI','SPX','JTO','CHZ','OHM','PYTH','BSV','GNO','CFX','TEL','DCR','KAIA','FLOKI',
-    'JASMY','LDO','GRT','OP','PENDLE','MON','XPL','IOTA','GWEI','ENS','ULTIMA','BILL',
-    'AKT','KOGE','ONYC','TWT','TRAC','SKYAI','AXS','REAL','WFI','NEX','USAT','COMP','NEO',
-    'RAY','THETA','SYRUP','MX','BTSE','GENIUS','XCN','BORG','SAND','AR','BAT','HOME',
-    'DYDX','MANA','ZANO','RAIL','EIGEN','STRCX','CFG','APE','VSN','GALA','SHFL','OZO',
-    'GLM','RUNE','WEMIX','HNT','SFP','FT','XEC','CVX','IMX','ZK','KAITO','1INCH','AWE',
-    'STAC','RIVER','TKX'
-]
-
-# remove known stables and junk
-EXCLUDE = {'USDS','USDC','USDT','BUSD','DAI','TUSD','USDP','GUSD','FRAX','LUSD','USDD',
-           'FDUSD','USDG','RLUSD','PYUSD','USYC','USDG','BUIDL','USDY','PAXG','USTB',
-           'USDAI','RUSD','USDA','USDM','APYUSD','CRVUSD','EURS','AUSD','NUSD','FRXUSD',
-           'THBILL','DUSD','SATUSD','USDAT','EURSAFO','APXUSD','EURC','EURCV','USDTB',
-           'EUTBL','STABLE','JTRSY','FIGR_HELOC','PC0000031','PC0000033','PC0000097',
-           'PC0000023','PC0000015','PC0000085','PC0000077','M','U','B','S','A','H',
-           'USDF','SKY','BFUSD','MORPHO','VVV','币安人生','FARTCOIN','BANANAS31','GOMINING',
-           'CHEEMS','CRCLON','TIBBIR','ACRED','SAHARA','FORM','BMX','STAC'}
-
-COINS = [c for c in COINS if c not in EXCLUDE]
-
+STABLECOINS = {
+    "USDT","USDC","BUSD","DAI","TUSD","USDP","GUSD","FRAX","LUSD","USDD",
+    "FDUSD","USDG","RLUSD","PYUSD","USDY","PAXG","USTB","USDAI","RUSD",
+    "USDA","USDM","CRVUSD","EURS","AUSD","NUSD","FRXUSD","DUSD","SATUSD",
+    "USDTB","EUTBL","EURC","EURCV","APXUSD","EURSAFO"
+}
 
 # =========================
 # TELEGRAM
@@ -67,19 +47,88 @@ def send_alert(message):
 
 
 # =========================
-# BINANCE
+# COINGECKO — GET COINS ABOVE $100M MCAP
+# called once per hour only
 # =========================
-def get_candles(symbol, interval, limit=500):
+def get_coins():
+    coins = []
+    page = 1
+    headers = {}
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+
+    while True:
+        try:
+            r = requests.get(
+                "https://api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": 250,
+                    "page": page,
+                    "sparkline": False
+                },
+                headers=headers,
+                timeout=20
+            )
+            data = r.json()
+            if not isinstance(data, list):
+                log.error(f"CoinGecko bad response: {data}")
+                break
+            if not data:
+                break
+            filtered = [
+                c["symbol"].upper() for c in data
+                if c.get("market_cap", 0) >= MIN_MARKET_CAP
+                and c["symbol"].upper() not in STABLECOINS
+            ]
+            coins.extend(filtered)
+            if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
+                break
+            page += 1
+            time.sleep(2)
+        except Exception as e:
+            log.error(f"CoinGecko error: {e}")
+            break
+
+    log.info(f"{len(coins)} coins loaded from CoinGecko")
+    return coins
+
+
+# =========================
+# COINBASE — GET CANDLES
+# granularity: 3600=1h, 14400=4h
+# max 300 per request — fetch 2 pages = 600 candles
+# =========================
+def get_candles_coinbase(ticker, granularity_seconds):
+    product_id = f"{ticker}-USD"
     try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
-            timeout=10
-        )
-        data = r.json()
-        if not isinstance(data, list) or len(data) < 50:
+        closes = []
+        end = datetime.now(timezone.utc)
+
+        for _ in range(2):
+            start = end - timedelta(seconds=granularity_seconds * 300)
+            r = requests.get(
+                f"https://api.exchange.coinbase.com/products/{product_id}/candles",
+                params={
+                    "granularity": granularity_seconds,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                },
+                timeout=10
+            )
+            data = r.json()
+            if not isinstance(data, list) or not data:
+                break
+            # coinbase returns newest first: [time, low, high, open, close, volume]
+            page_closes = [float(c[4]) for c in reversed(data)]
+            closes = page_closes + closes
+            end = start
+            time.sleep(0.1)
+
+        if len(closes) < 50:
             return None
-        return [float(x[4]) for x in data[:-1]]
+        return closes[:-1]  # exclude live candle
     except:
         return None
 
@@ -117,15 +166,13 @@ def check_signal(closes):
 # =========================
 # SCAN ONE TIMEFRAME
 # =========================
-def scan_timeframe(interval):
+def scan_timeframe(coins, interval_label):
+    granularity = 3600 if interval_label == "1h" else 14400
     bullish = []
     bearish = []
 
-    for ticker in COINS:
-        symbol = ticker + "USDT"
-        closes = get_candles(symbol, interval)
-        if closes is None:
-            closes = get_candles(ticker + "BTC", interval)
+    for ticker in coins:
+        closes = get_candles_coinbase(ticker, granularity)
         if closes is None:
             continue
 
@@ -133,7 +180,7 @@ def scan_timeframe(interval):
         if direction is None:
             continue
 
-        log.info(f"{symbol} [{interval}] {direction} ({candles_ago}c ago)")
+        log.info(f"{ticker} [{interval_label}] {direction} ({candles_ago}c ago)")
 
         if direction == "BULLISH":
             bullish.append(ticker)
@@ -175,13 +222,13 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
 # =========================
 # SCAN
 # =========================
-def do_scan(label=""):
+def do_scan(coins, label=""):
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if label:
         log.info(f"{label} scanning...")
 
-    bullish_1h, bearish_1h = scan_timeframe("1h")
-    bullish_4h, bearish_4h = scan_timeframe("4h")
+    bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
+    bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
 
     if any([bullish_1h, bearish_1h, bullish_4h, bearish_4h]):
         msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
@@ -192,17 +239,46 @@ def do_scan(label=""):
 
 
 # =========================
+# CANDLE JUST CLOSED
+# =========================
+def candle_just_closed(interval):
+    now = datetime.now(timezone.utc)
+    if interval == "1h":
+        return now.minute < 2
+    if interval == "4h":
+        return now.hour % 4 == 0 and now.minute < 2
+    return False
+
+
+# =========================
 # MAIN LOOP
 # =========================
 def run():
-    log.info(f"1H 4H EMA Cross Scanner started. {len(COINS)} coins loaded.")
-    send_alert(f"✅ <b>EMA 12/21 Scanner Online</b>\n{len(COINS)} coins loaded. Scanning every 5 min.")
+    log.info("1H 4H EMA Cross Scanner started.")
+    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nCoinGecko filter + Coinbase candles. Scanning at candle close.")
 
-    do_scan(label="Startup")
+    coins = get_coins()
+    last_coin_refresh = datetime.now(timezone.utc)
+
+    do_scan(coins, label="Startup")
 
     while True:
         time.sleep(CHECK_INTERVAL)
-        do_scan()
+        now = datetime.now(timezone.utc)
+
+        # refresh coins once per hour
+        if (now - last_coin_refresh).total_seconds() > 3600:
+            coins = get_coins()
+            last_coin_refresh = now
+
+        intervals = []
+        if candle_just_closed("1h"):
+            intervals.append("1h")
+        if candle_just_closed("4h"):
+            intervals.append("4h")
+
+        if intervals:
+            do_scan(coins, label="+".join(i.upper() for i in intervals))
 
 
 if __name__ == "__main__":
