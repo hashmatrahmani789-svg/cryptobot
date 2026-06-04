@@ -156,7 +156,7 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
 # =========================
 # SIGNAL LOGIC
 # Signal 1: cross on last candle + volume above MA at that candle
-# Signal 2: cross happened 2-6 candles ago (low vol then) + current candle vol now above MA
+# Signal 2: cross happened 2-6 candles ago + current candle vol now above MA
 # =========================
 def check_signal(closes, volumes):
     direction, candles_ago = find_cross(closes)
@@ -175,12 +175,10 @@ def check_signal(closes, volumes):
     else:
         # === SIGNAL 2: delayed confirmation ===
         # cross happened 2-6 candles ago
-        # volume at cross candle was LOW (below MA)
-        cross_vol_was_low = not volume_above_ma(volumes, candle_index=-candles_ago)
         # current candle volume is NOW above MA
         current_vol_high = volume_above_ma(volumes, candle_index=-1)
 
-        if cross_vol_was_low and current_vol_high:
+        if current_vol_high:
             return direction, candles_ago
 
     return None, None
