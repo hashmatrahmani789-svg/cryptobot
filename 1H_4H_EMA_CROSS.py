@@ -17,8 +17,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MIN_MARKET_CAP   = 200_000_000
 EMA_FAST         = 12
 EMA_SLOW         = 21
-VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 12
+
 
 # =========================
 # TELEGRAM
@@ -109,24 +109,14 @@ def calc_ema(values, period):
 
 
 # =========================
-# VOLUME ABOVE MA CHECK
-# =========================
-def volume_above_ma(volumes, candle_index=-1, period=VOLUME_MA_PERIOD):
-    abs_index = len(volumes) + candle_index
-    if abs_index < period:
-        return False
-    ma = sum(volumes[abs_index - period : abs_index]) / period
-    return volumes[abs_index] > ma
-
-
-# =========================
 # FIND EMA CROSS IN LAST N CANDLES
+# no volume filter — fires on cross only
 # =========================
-def find_cross(closes, lookback=CROSS_LOOKBACK):
+def check_signal(closes):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
 
-    for i in range(1, lookback + 1):
+    for i in range(1, CROSS_LOOKBACK + 1):
         curr_idx = -i
         prev_idx = -(i + 1)
 
@@ -144,29 +134,6 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
 
 
 # =========================
-# SIGNAL LOGIC
-# =========================
-def check_signal(closes, volumes):
-    direction, candles_ago = find_cross(closes)
-
-    if direction is None:
-        return None, None
-
-    if candles_ago == 1:
-        if volume_above_ma(volumes, candle_index=-1):
-            return direction, 1
-        else:
-            return None, None
-
-    else:
-        current_vol_high = volume_above_ma(volumes, candle_index=-1)
-        if current_vol_high:
-            return direction, candles_ago
-
-    return None, None
-
-
-# =========================
 # SCAN ONE TIMEFRAME
 # =========================
 def scan_timeframe(coins, interval):
@@ -177,22 +144,21 @@ def scan_timeframe(coins, interval):
         ticker = coin.get("symbol", "").upper()
         symbol = ticker + "USDT"
 
-        closes, volumes = get_candles(symbol, interval)
+        closes, _ = get_candles(symbol, interval)
 
         if closes is None:
             symbol = ticker + "BTC"
-            closes, volumes = get_candles(symbol, interval)
+            closes, _ = get_candles(symbol, interval)
 
         if closes is None:
             continue
 
-        direction, candles_ago = check_signal(closes, volumes)
+        direction, candles_ago = check_signal(closes)
 
         if direction is None:
             continue
 
-        signal_type = "S1" if candles_ago == 1 else f"S2({candles_ago})"
-        log.info(f"{symbol} [{interval}] {direction} {signal_type}")
+        log.info(f"{symbol} [{interval}] {direction} ({candles_ago}c ago)")
 
         if direction == "BULLISH":
             bullish.append(ticker)
@@ -286,7 +252,7 @@ def wait_until_next_scan():
 # =========================
 if __name__ == "__main__":
     log.info("Intraday EMA Scanner started.")
-    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning 1H + 4H every hour.")
+    send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning 1H + 4H every hour. No volume filter.")
     run_scan()
     while True:
         wait_until_next_scan()
