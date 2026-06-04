@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [INTRADAY-EMA] %(message)s",
+   format="%(asctime)s [1H-4H-CROSS] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger(__name__)
