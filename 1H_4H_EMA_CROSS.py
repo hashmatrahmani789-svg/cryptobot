@@ -397,4 +397,4 @@ if __name__ == "__main__":
     run_scan()
     while True:
         wait_until_next_scan()
-run_scan()
+        run_scan()
