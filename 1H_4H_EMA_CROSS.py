@@ -11,18 +11,29 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
-MIN_MARKET_CAP    = 200_000_000
-EMA_FAST          = 12
-EMA_SLOW          = 21
-VOLUME_MA_PERIOD  = 20
-CROSS_LOOKBACK    = 12
-COIN_CACHE_HOURS  = 24
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+EMA_FAST         = 12
+EMA_SLOW         = 21
+VOLUME_MA_PERIOD = 20
+CROSS_LOOKBACK   = 12
 
-_coin_cache      = {}
-_coin_cache_time = None
+COINS = [
+    "BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "TRX", "AVAX", "SHIB",
+    "DOT", "LINK", "TON", "MATIC", "UNI", "ICP", "LTC", "APT", "NEAR", "FIL",
+    "ARB", "OP", "ATOM", "VET", "ALGO", "HBAR", "MKR", "AAVE", "GRT", "SAND",
+    "MANA", "AXS", "CRV", "SNX", "COMP", "LDO", "ENS", "1INCH", "BAL", "YFI",
+    "SUSHI", "ZRX", "UMA", "REN", "STORJ", "SKL", "CELO", "FTM", "ROSE", "ZIL",
+    "KAVA", "WAVES", "IOTA", "XTZ", "EOS", "NEO", "XLM", "BCH", "ETC", "DASH",
+    "ZEC", "XMR", "EGLD", "THETA", "CHZ", "HOT", "ANKR", "ONE", "CELR",
+    "DENT", "MTL", "OGN", "BAND", "RLC", "NMR", "BNT", "KNC", "LRC",
+    "OMG", "BAT", "ZEN", "ICX", "ONT", "QTUM", "LSK", "SYS", "STMX",
+    "FUN", "CVC", "REQ", "POL", "OCEAN", "FET", "RNDR", "INJ",
+    "WLD", "SEI", "TIA", "PYTH", "JUP", "BONK", "WIF", "PEPE",
+    "FLOKI", "CFX", "STX", "MINA", "SUI", "APE", "GMT", "GAL", "HIGH",
+    "HOOK", "MAGIC", "DYDX", "GMX", "BLUR", "RPL", "FXS",
+    "SPELL", "PEOPLE", "GLMR", "RUNE", "OSMO", "AKT",
+]
 
 
 # =========================
@@ -44,98 +55,48 @@ def send_alert(message):
 
 
 # =========================
-# COINGECKO — CACHED COIN LIST
-# refreshes once every 24 hours
-# =========================
-def get_coins():
-    global _coin_cache, _coin_cache_time
-    now = datetime.now(timezone.utc)
-
-    if _coin_cache and _coin_cache_time:
-        age_hours = (now - _coin_cache_time).total_seconds() / 3600
-        if age_hours < COIN_CACHE_HOURS:
-            log.info(f"{len(_coin_cache)} coins from cache")
-            return _coin_cache
-
-    coins = {}
-    page = 1
-    while True:
-        try:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/coins/markets",
-                headers={"x-cg-demo-api-key": COINGECKO_API_KEY},
-                params={
-                    "vs_currency": "usd",
-                    "order": "market_cap_desc",
-                    "per_page": 250,
-                    "page": page,
-                    "sparkline": False
-                },
-                timeout=20
-            )
-            data = r.json()
-            if not isinstance(data, list):
-                log.warning(f"CoinGecko bad response: {data}")
-                time.sleep(10)
-                continue
-            if not data:
-                break
-            for c in data:
-                mcap = c.get("market_cap", 0)
-                if mcap >= MIN_MARKET_CAP:
-                    ticker = c.get("symbol", "").upper()
-                    coins[ticker] = {
-                        "market_cap": mcap,
-                        "price_change_24h": c.get("price_change_percentage_24h", 0),
-                        "current_price": c.get("current_price", 0)
-                    }
-            if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
-                break
-            page += 1
-            time.sleep(2)
-        except Exception as e:
-            log.error(f"CoinGecko error: {e}")
-            break
-
-    _coin_cache = coins
-    _coin_cache_time = now
-    log.info(f"{len(coins)} coins fetched from CoinGecko")
-    return coins
-
-
-# =========================
-# COINBASE — GET CANDLES
+# BINANCE — GET CANDLES
 # =========================
 def get_candles(ticker, interval):
-    granularity_map = {
-        "1h": "ONE_HOUR",
-        "4h": "FOUR_HOUR"
-    }
-    granularity = granularity_map.get(interval)
-    if not granularity:
-        return None, None
-
-    product_id = f"{ticker}-USDT"
-
+    symbol = ticker + "USDT"
     try:
         r = requests.get(
-            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
-            params={"granularity": granularity, "limit": 150},
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": interval, "limit": 150},
             timeout=10
         )
         data = r.json()
-        candles = data.get("candles", [])
-        if not candles or len(candles) < 50:
+        if not isinstance(data, list) or len(data) < 50:
             return None, None
-
-        candles = list(reversed(candles))[:-1]
-        closes  = [float(c["close"]) for c in candles]
-        volumes = [float(c["volume"]) for c in candles]
+        data = data[:-1]
+        closes  = [float(x[4]) for x in data]
+        volumes = [float(x[5]) for x in data]
         return closes, volumes
-
-    except Exception as e:
-        log.error(f"Coinbase error {product_id}: {e}")
+    except:
         return None, None
+
+
+# =========================
+# BINANCE — GET 24H TICKER
+# =========================
+def get_ticker(ticker):
+    symbol = ticker + "USDT"
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbol": symbol},
+            timeout=10
+        )
+        data = r.json()
+        return {
+            "price":      float(data.get("lastPrice", 0)),
+            "change_24h": float(data.get("priceChangePercent", 0)),
+            "volume_24h": float(data.get("quoteVolume", 0)),
+            "high_24h":   float(data.get("highPrice", 0)),
+            "low_24h":    float(data.get("lowPrice", 0)),
+        }
+    except:
+        return None
 
 
 # =========================
@@ -188,59 +149,83 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
 # =========================
 def check_signal(closes, volumes):
     direction, candles_ago = find_cross(closes)
-
     if direction is None:
-        return None, None
+        return None, None, None
+
+    ema_fast = calc_ema(closes, EMA_FAST)
+    ema_slow = calc_ema(closes, EMA_SLOW)
+    ema_dist = abs(closes[-1] - ema_slow[-1]) / ema_slow[-1] * 100
 
     if candles_ago == 1:
         if volume_above_ma(volumes, candle_index=-1):
-            return direction, 1
+            return direction, 1, ema_dist
         else:
-            return None, None
+            return None, None, None
     else:
         cross_vol_was_low = not volume_above_ma(volumes, candle_index=-candles_ago)
         current_vol_high  = volume_above_ma(volumes, candle_index=-1)
         if cross_vol_was_low and current_vol_high:
-            return direction, candles_ago
+            return direction, candles_ago, ema_dist
 
-    return None, None
+    return None, None, None
 
 
 # =========================
-# FORMAT MARKET CAP
+# FORMAT VOLUME
 # =========================
-def fmt_mcap(mcap):
-    if mcap >= 1_000_000_000:
-        return f"${mcap/1_000_000_000:.1f}B"
-    return f"${mcap/1_000_000:.0f}M"
+def fmt_vol(v):
+    if v >= 1_000_000_000:
+        return f"${v/1_000_000_000:.1f}B"
+    if v >= 1_000_000:
+        return f"${v/1_000_000:.1f}M"
+    return f"${v/1_000:.1f}K"
+
+
+# =========================
+# FORMAT PRICE
+# =========================
+def fmt_price(p):
+    if p >= 1000:
+        return f"${p:,.0f}"
+    if p >= 1:
+        return f"${p:.2f}"
+    return f"${p:.6f}"
 
 
 # =========================
 # SCAN ONE TIMEFRAME
 # =========================
-def scan_timeframe(coins, interval):
+def scan_timeframe(interval):
     bullish = []
     bearish = []
 
-    for ticker, info in coins.items():
+    for ticker in COINS:
         closes, volumes = get_candles(ticker, interval)
         if closes is None:
             continue
 
-        direction, candles_ago = check_signal(closes, volumes)
+        direction, candles_ago, ema_dist = check_signal(closes, volumes)
         if direction is None:
             continue
 
-        signal_type = "fresh" if candles_ago == 1 else f"{candles_ago} candles ago"
-        log.info(f"{ticker} [{interval}] {direction} ({signal_type})")
+        ticker_data = get_ticker(ticker)
+        if ticker_data is None:
+            continue
+
+        signal_label = "S1" if candles_ago == 1 else f"S2({candles_ago})"
+        log.info(f"{ticker} [{interval}] {direction} {signal_label}")
 
         entry = {
             "ticker":      ticker,
-            "candles_ago": signal_type,
-            "mcap":        fmt_mcap(info["market_cap"]),
-            "change_24h":  info["price_change_24h"],
-            "price":       info["current_price"],
-            "tv_link":     f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USDT"
+            "signal":      signal_label,
+            "candles_ago": candles_ago,
+            "ema_dist":    ema_dist,
+            "price":       ticker_data["price"],
+            "change_24h":  ticker_data["change_24h"],
+            "volume_24h":  ticker_data["volume_24h"],
+            "high_24h":    ticker_data["high_24h"],
+            "low_24h":     ticker_data["low_24h"],
+            "tv_link":     f"https://www.tradingview.com/chart/?symbol=BINANCE:{ticker}USDT"
         }
 
         if direction == "BULLISH":
@@ -248,7 +233,7 @@ def scan_timeframe(coins, interval):
         else:
             bearish.append(entry)
 
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     return bullish, bearish
 
@@ -260,7 +245,10 @@ def fmt_coin(e):
     change = e["change_24h"]
     change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
     return (
-        f"<b>{e['ticker']}</b> — {e['mcap']} | 24h: {change_str} | cross: {e['candles_ago']}\n"
+        f"<b>{e['ticker']}</b> [{e['signal']}]\n"
+        f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
+        f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA dist: {e['ema_dist']:.1f}%\n"
+        f"📉 Range: {fmt_price(e['low_24h'])} — {fmt_price(e['high_24h'])}\n"
         f"<a href='{e['tv_link']}'>📈 TradingView</a>"
     )
 
@@ -313,16 +301,15 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
-    coins = get_coins()
-    bullish_1h, bearish_1h = scan_timeframe(coins, "1h")
-    bullish_4h, bearish_4h = scan_timeframe(coins, "4h")
+    bullish_1h, bearish_1h = scan_timeframe("1h")
+    bullish_4h, bearish_4h = scan_timeframe("4h")
     msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
     send_alert(msg)
     log.info("Scan complete.")
 
 
 # =========================
-# HOURLY TIMER — runs at :05
+# HOURLY TIMER — runs at :00
 # =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
