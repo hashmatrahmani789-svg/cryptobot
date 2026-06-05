@@ -15,11 +15,6 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 EMA_PERIOD       = 50
 
-# =========================
-# HARDCODED COIN LIST
-# Format: (ticker, market_cap_string)
-# Update market caps manually once a week
-# =========================
 COINS = [
     ("BTC",   "$1.3T"),
     ("ETH",   "$320B"),
@@ -36,16 +31,20 @@ COINS = [
     ("TON",   "$8B"),
     ("UNI",   "$7B"),
     ("LTC",   "$7B"),
+    ("BCH",   "$7B"),
     ("APT",   "$6B"),
     ("NEAR",  "$6B"),
+    ("XLM",   "$4B"),
     ("ICP",   "$5B"),
     ("FIL",   "$4B"),
+    ("ETC",   "$4B"),
     ("ARB",   "$4B"),
     ("OP",    "$3B"),
     ("ATOM",  "$3B"),
     ("HBAR",  "$3B"),
     ("MKR",   "$3B"),
     ("AAVE",  "$3B"),
+    ("PEPE",  "$6.5B"),
     ("VET",   "$2.5B"),
     ("ALGO",  "$2B"),
     ("GRT",   "$2B"),
@@ -55,24 +54,29 @@ COINS = [
     ("IMX",   "$2B"),
     ("FET",   "$2B"),
     ("STX",   "$2B"),
+    ("SUI",   "$700M"),
     ("SAND",  "$1.5B"),
     ("MANA",  "$1.5B"),
     ("AXS",   "$1.5B"),
     ("CRV",   "$1.5B"),
+    ("EGLD",  "$1.5B"),
     ("SNX",   "$1.2B"),
     ("COMP",  "$1.2B"),
+    ("EOS",   "$1B"),
+    ("THETA", "$1B"),
+    ("FTM",   "$1B"),
     ("ENS",   "$1B"),
+    ("XTZ",   "$800M"),
+    ("SUSHI", "$800M"),
     ("1INCH", "$900M"),
     ("YFI",   "$900M"),
-    ("SUSHI", "$800M"),
     ("ZRX",   "$700M"),
     ("BAL",   "$700M"),
     ("OCEAN", "$700M"),
     ("WLD",   "$700M"),
     ("SEI",   "$700M"),
     ("TIA",   "$700M"),
-    ("SUI",   "$700M"),
-    ("PEPE",  "$6.5B"),
+    ("CHZ",   "$700M"),
     ("FLOKI", "$600M"),
     ("BONK",  "$600M"),
     ("WIF",   "$600M"),
@@ -81,6 +85,7 @@ COINS = [
     ("DYDX",  "$600M"),
     ("GMX",   "$600M"),
     ("RPL",   "$600M"),
+    ("KAVA",  "$600M"),
     ("FXS",   "$500M"),
     ("BLUR",  "$500M"),
     ("CFX",   "$500M"),
@@ -89,42 +94,32 @@ COINS = [
     ("GMT",   "$500M"),
     ("GAL",   "$500M"),
     ("MAGIC", "$500M"),
+    ("ANKR",  "$500M"),
+    ("ROSE",  "$500M"),
+    ("CELO",  "$400M"),
+    ("BAT",   "$400M"),
+    ("QTUM",  "$400M"),
+    ("RUNE",  "$400M"),
+    ("WAVES", "$400M"),
+    ("ZIL",   "$400M"),
     ("HOOK",  "$400M"),
     ("PERP",  "$400M"),
     ("SPELL", "$400M"),
     ("PEOPLE","$400M"),
     ("GLMR",  "$400M"),
-    ("RUNE",  "$400M"),
     ("OSMO",  "$400M"),
     ("AKT",   "$400M"),
-    ("XLM",   "$4B"),
-    ("BCH",   "$7B"),
-    ("ETC",   "$4B"),
-    ("XTZ",   "$800M"),
-    ("EOS",   "$1B"),
-    ("EGLD",  "$1.5B"),
-    ("THETA", "$1B"),
-    ("CHZ",   "$700M"),
-    ("ANKR",  "$500M"),
-    ("FTM",   "$1B"),
-    ("ROSE",  "$500M"),
-    ("KAVA",  "$600M"),
-    ("WAVES", "$400M"),
-    ("ZIL",   "$400M"),
     ("ONE",   "$300M"),
     ("CELR",  "$300M"),
     ("BAND",  "$300M"),
     ("NMR",   "$300M"),
     ("KNC",   "$300M"),
     ("LRC",   "$300M"),
-    ("BAT",   "$400M"),
     ("ICX",   "$300M"),
-    ("QTUM",  "$400M"),
     ("ZEN",   "$300M"),
     ("ONT",   "$300M"),
     ("STORJ", "$300M"),
     ("SKL",   "$300M"),
-    ("CELO",  "$400M"),
     ("RLC",   "$300M"),
     ("UMA",   "$300M"),
     ("OGN",   "$200M"),
@@ -135,9 +130,6 @@ COINS = [
 ]
 
 
-# =========================
-# TELEGRAM
-# =========================
 def send_alert(message):
     try:
         r = requests.post(
@@ -153,14 +145,8 @@ def send_alert(message):
         log.error(f"Telegram exception: {e}")
 
 
-# =========================
-# COINBASE — GET CANDLES
-# =========================
 def get_candles(ticker, interval):
-    granularity_map = {
-        "1h": "ONE_HOUR",
-        "4h": "FOUR_HOUR"
-    }
+    granularity_map = {"1h": "ONE_HOUR", "4h": "FOUR_HOUR"}
     granularity = granularity_map.get(interval)
     product_id = f"{ticker}-USDT"
     try:
@@ -187,9 +173,6 @@ def get_candles(ticker, interval):
         return None
 
 
-# =========================
-# COINBASE — GET 24H TICKER
-# =========================
 def get_ticker(ticker):
     product_id = f"{ticker}-USDT"
     try:
@@ -209,9 +192,6 @@ def get_ticker(ticker):
         return None
 
 
-# =========================
-# EMA CALCULATION
-# =========================
 def calc_ema(values, period):
     k = 2 / (period + 1)
     ema = [values[0]]
@@ -220,11 +200,6 @@ def calc_ema(values, period):
     return ema
 
 
-# =========================
-# SIGNAL LOGIC
-# Step 1 — 4H candle touches the 50 EMA
-# Step 2 — 1H candle closes above/below the 50 EMA
-# =========================
 def check_4h_touch(candles_4h, ema_4h):
     c   = candles_4h[-1]
     e   = ema_4h[-1]
@@ -242,9 +217,6 @@ def check_1h_confirmation(candles_1h, ema_1h):
     return None
 
 
-# =========================
-# FORMAT HELPERS
-# =========================
 def fmt_vol(v):
     if v >= 1_000_000_000:
         return f"${v/1_000_000_000:.1f}B"
@@ -260,20 +232,22 @@ def fmt_price(p):
     return f"${p:.6f}"
 
 
-# =========================
-# SCAN ALL COINS
-# =========================
 def scan_coins():
     bullish = []
     bearish = []
+    skipped = 0
 
     for ticker, mcap in COINS:
         candles_4h = get_candles(ticker, "4h")
         if candles_4h is None:
+            log.warning(f"{ticker} — no 4h data")
+            skipped += 1
             continue
 
         candles_1h = get_candles(ticker, "1h")
         if candles_1h is None:
+            log.warning(f"{ticker} — no 1h data")
+            skipped += 1
             continue
 
         closes_4h = [c["close"] for c in candles_4h]
@@ -313,12 +287,10 @@ def scan_coins():
 
         time.sleep(0.1)
 
+    log.info(f"{skipped} coins skipped — no data from Coinbase")
     return bullish, bearish
 
 
-# =========================
-# FORMAT COIN LINE
-# =========================
 def fmt_coin(e):
     change = e["change_24h"]
     change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
@@ -331,9 +303,6 @@ def fmt_coin(e):
     )
 
 
-# =========================
-# BUILD MESSAGE
-# =========================
 def build_message(bullish, bearish, now_str):
     if not bullish and not bearish:
         return (
@@ -359,9 +328,6 @@ def build_message(bullish, bearish, now_str):
     return "\n".join(lines)
 
 
-# =========================
-# MAIN SCAN
-# =========================
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
@@ -371,9 +337,6 @@ def run_scan():
     log.info("Scan complete.")
 
 
-# =========================
-# HOURLY TIMER — runs at :15
-# =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
     next_run = now.replace(minute=15, second=0, microsecond=0)
@@ -384,9 +347,6 @@ def wait_until_next_scan():
     time.sleep(sleep_secs)
 
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     log.info("EMA 50 Touch Scanner started.")
     send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 4H touch + 1H confirmation every hour at :15.")

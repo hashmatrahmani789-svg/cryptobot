@@ -18,12 +18,6 @@ EMA_SLOW         = 21
 VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 12
 
-# =========================
-# HARDCODED COIN LIST
-# Format: (ticker, market_cap_string)
-# Update market caps manually once a week
-# Only coins with $200M+ mcap listed on Coinbase
-# =========================
 COINS = [
     ("BTC",   "$1.3T"),
     ("ETH",   "$320B"),
@@ -40,16 +34,20 @@ COINS = [
     ("TON",   "$8B"),
     ("UNI",   "$7B"),
     ("LTC",   "$7B"),
+    ("BCH",   "$7B"),
     ("APT",   "$6B"),
     ("NEAR",  "$6B"),
+    ("XLM",   "$4B"),
     ("ICP",   "$5B"),
     ("FIL",   "$4B"),
+    ("ETC",   "$4B"),
     ("ARB",   "$4B"),
     ("OP",    "$3B"),
     ("ATOM",  "$3B"),
     ("HBAR",  "$3B"),
     ("MKR",   "$3B"),
     ("AAVE",  "$3B"),
+    ("PEPE",  "$6.5B"),
     ("VET",   "$2.5B"),
     ("ALGO",  "$2B"),
     ("GRT",   "$2B"),
@@ -59,24 +57,29 @@ COINS = [
     ("IMX",   "$2B"),
     ("FET",   "$2B"),
     ("STX",   "$2B"),
+    ("SUI",   "$700M"),
     ("SAND",  "$1.5B"),
     ("MANA",  "$1.5B"),
     ("AXS",   "$1.5B"),
     ("CRV",   "$1.5B"),
+    ("EGLD",  "$1.5B"),
     ("SNX",   "$1.2B"),
     ("COMP",  "$1.2B"),
+    ("EOS",   "$1B"),
+    ("THETA", "$1B"),
+    ("FTM",   "$1B"),
     ("ENS",   "$1B"),
+    ("XTZ",   "$800M"),
+    ("SUSHI", "$800M"),
     ("1INCH", "$900M"),
     ("YFI",   "$900M"),
-    ("SUSHI", "$800M"),
     ("ZRX",   "$700M"),
     ("BAL",   "$700M"),
     ("OCEAN", "$700M"),
     ("WLD",   "$700M"),
     ("SEI",   "$700M"),
     ("TIA",   "$700M"),
-    ("SUI",   "$700M"),
-    ("PEPE",  "$650B"),
+    ("CHZ",   "$700M"),
     ("FLOKI", "$600M"),
     ("BONK",  "$600M"),
     ("WIF",   "$600M"),
@@ -85,6 +88,7 @@ COINS = [
     ("DYDX",  "$600M"),
     ("GMX",   "$600M"),
     ("RPL",   "$600M"),
+    ("KAVA",  "$600M"),
     ("FXS",   "$500M"),
     ("BLUR",  "$500M"),
     ("CFX",   "$500M"),
@@ -93,42 +97,32 @@ COINS = [
     ("GMT",   "$500M"),
     ("GAL",   "$500M"),
     ("MAGIC", "$500M"),
+    ("ANKR",  "$500M"),
+    ("ROSE",  "$500M"),
+    ("CELO",  "$400M"),
+    ("BAT",   "$400M"),
+    ("QTUM",  "$400M"),
+    ("RUNE",  "$400M"),
+    ("WAVES", "$400M"),
+    ("ZIL",   "$400M"),
     ("HOOK",  "$400M"),
     ("PERP",  "$400M"),
     ("SPELL", "$400M"),
     ("PEOPLE","$400M"),
     ("GLMR",  "$400M"),
-    ("RUNE",  "$400M"),
     ("OSMO",  "$400M"),
     ("AKT",   "$400M"),
-    ("XLM",   "$4B"),
-    ("BCH",   "$7B"),
-    ("ETC",   "$4B"),
-    ("XTZ",   "$800M"),
-    ("EOS",   "$1B"),
-    ("EGLD",  "$1.5B"),
-    ("THETA", "$1B"),
-    ("CHZ",   "$700M"),
-    ("ANKR",  "$500M"),
-    ("FTM",   "$1B"),
-    ("ROSE",  "$500M"),
-    ("KAVA",  "$600M"),
-    ("WAVES", "$400M"),
-    ("ZIL",   "$400M"),
     ("ONE",   "$300M"),
     ("CELR",  "$300M"),
     ("BAND",  "$300M"),
     ("NMR",   "$300M"),
     ("KNC",   "$300M"),
     ("LRC",   "$300M"),
-    ("BAT",   "$400M"),
     ("ICX",   "$300M"),
-    ("QTUM",  "$400M"),
     ("ZEN",   "$300M"),
     ("ONT",   "$300M"),
     ("STORJ", "$300M"),
     ("SKL",   "$300M"),
-    ("CELO",  "$400M"),
     ("RLC",   "$300M"),
     ("UMA",   "$300M"),
     ("OGN",   "$200M"),
@@ -139,9 +133,6 @@ COINS = [
 ]
 
 
-# =========================
-# TELEGRAM
-# =========================
 def send_alert(message):
     try:
         r = requests.post(
@@ -157,14 +148,8 @@ def send_alert(message):
         log.error(f"Telegram exception: {e}")
 
 
-# =========================
-# COINBASE — GET CANDLES
-# =========================
 def get_candles(ticker, interval):
-    granularity_map = {
-        "1h": "ONE_HOUR",
-        "4h": "FOUR_HOUR"
-    }
+    granularity_map = {"1h": "ONE_HOUR", "4h": "FOUR_HOUR"}
     granularity = granularity_map.get(interval)
     product_id = f"{ticker}-USDT"
     try:
@@ -185,9 +170,6 @@ def get_candles(ticker, interval):
         return None, None
 
 
-# =========================
-# COINBASE — GET 24H TICKER
-# =========================
 def get_ticker(ticker):
     product_id = f"{ticker}-USDT"
     try:
@@ -196,25 +178,17 @@ def get_ticker(ticker):
             timeout=10
         )
         data = r.json()
-        price      = float(data.get("price", 0))
-        change_24h = float(data.get("price_percentage_change_24h", 0))
-        volume_24h = float(data.get("volume_24h", 0))
-        high_24h   = float(data.get("high_52_week", 0))
-        low_24h    = float(data.get("low_52_week", 0))
         return {
-            "price":      price,
-            "change_24h": change_24h,
-            "volume_24h": volume_24h,
-            "high_24h":   high_24h,
-            "low_24h":    low_24h,
+            "price":      float(data.get("price", 0)),
+            "change_24h": float(data.get("price_percentage_change_24h", 0)),
+            "volume_24h": float(data.get("volume_24h", 0)),
+            "high_24h":   float(data.get("high_52_week", 0)),
+            "low_24h":    float(data.get("low_52_week", 0)),
         }
     except:
         return None
 
 
-# =========================
-# EMA CALCULATION
-# =========================
 def calc_ema(values, period):
     k = 2 / (period + 1)
     ema = [values[0]]
@@ -223,9 +197,6 @@ def calc_ema(values, period):
     return ema
 
 
-# =========================
-# VOLUME ABOVE MA CHECK
-# =========================
 def volume_above_ma(volumes, candle_index=-1, period=VOLUME_MA_PERIOD):
     abs_index = len(volumes) + candle_index
     if abs_index < period:
@@ -234,9 +205,6 @@ def volume_above_ma(volumes, candle_index=-1, period=VOLUME_MA_PERIOD):
     return volumes[abs_index] > ma
 
 
-# =========================
-# FIND EMA CROSS
-# =========================
 def find_cross(closes, lookback=CROSS_LOOKBACK):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
@@ -254,17 +222,12 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
     return None, None
 
 
-# =========================
-# SIGNAL LOGIC
-# =========================
 def check_signal(closes, volumes):
     direction, candles_ago = find_cross(closes)
     if direction is None:
         return None, None, None
-
     ema_slow = calc_ema(closes, EMA_SLOW)
     ema_dist = abs(closes[-1] - ema_slow[-1]) / ema_slow[-1] * 100
-
     if candles_ago == 1:
         if volume_above_ma(volumes, candle_index=-1):
             return direction, 1, ema_dist
@@ -275,13 +238,9 @@ def check_signal(closes, volumes):
         current_vol_high  = volume_above_ma(volumes, candle_index=-1)
         if cross_vol_was_low and current_vol_high:
             return direction, candles_ago, ema_dist
-
     return None, None, None
 
 
-# =========================
-# FORMAT HELPERS
-# =========================
 def fmt_vol(v):
     if v >= 1_000_000_000:
         return f"${v/1_000_000_000:.1f}B"
@@ -297,16 +256,16 @@ def fmt_price(p):
     return f"${p:.6f}"
 
 
-# =========================
-# SCAN ONE TIMEFRAME
-# =========================
 def scan_timeframe(interval):
     bullish = []
     bearish = []
+    skipped = 0
 
     for ticker, mcap in COINS:
         closes, volumes = get_candles(ticker, interval)
         if closes is None:
+            log.warning(f"{ticker} [{interval}] — no data")
+            skipped += 1
             continue
 
         direction, candles_ago, ema_dist = check_signal(closes, volumes)
@@ -337,12 +296,10 @@ def scan_timeframe(interval):
 
         time.sleep(0.1)
 
+    log.info(f"[{interval}] {skipped} coins skipped — no data from Coinbase")
     return bullish, bearish
 
 
-# =========================
-# FORMAT COIN LINE
-# =========================
 def fmt_coin(e):
     change = e["change_24h"]
     change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
@@ -355,9 +312,6 @@ def fmt_coin(e):
     )
 
 
-# =========================
-# BUILD MESSAGE
-# =========================
 def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
     has_signals = any([bullish_1h, bearish_1h, bullish_4h, bearish_4h])
 
@@ -397,9 +351,6 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
     return "\n".join(lines)
 
 
-# =========================
-# MAIN SCAN
-# =========================
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
@@ -410,9 +361,6 @@ def run_scan():
     log.info("Scan complete.")
 
 
-# =========================
-# HOURLY TIMER — runs at :00
-# =========================
 def wait_until_next_scan():
     now = datetime.now(timezone.utc)
     next_run = now.replace(minute=0, second=0, microsecond=0)
@@ -423,9 +371,6 @@ def wait_until_next_scan():
     time.sleep(sleep_secs)
 
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     log.info("Intraday EMA Scanner started.")
     send_alert("✅ <b>EMA 12/21 Scanner Online</b>\nScanning 1H + 4H every hour at :00.")
