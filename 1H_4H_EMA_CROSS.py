@@ -151,7 +151,7 @@ def send_alert(message):
 def get_candles(ticker, interval):
     granularity_map = {"1h": "ONE_HOUR", "4h": "FOUR_HOUR"}
     granularity = granularity_map.get(interval)
-   product_id = f"{ticker}-USD"
+    product_id = f"{ticker}-USD"
     try:
         r = requests.get(
             f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
@@ -171,7 +171,7 @@ def get_candles(ticker, interval):
 
 
 def get_ticker(ticker):
-    product_id = f"{ticker}-USDT"
+    product_id = f"{ticker}-USD"
     try:
         r = requests.get(
             f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}",
@@ -286,7 +286,7 @@ def scan_timeframe(interval):
             "volume_24h":  ticker_data["volume_24h"] if ticker_data else 0,
             "high_24h":    ticker_data["high_24h"] if ticker_data else 0,
             "low_24h":     ticker_data["low_24h"] if ticker_data else 0,
-            "tv_link":     f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USDT"
+            "tv_link":     f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
         }
 
         if direction == "BULLISH":
