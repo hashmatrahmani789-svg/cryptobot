@@ -18,21 +18,124 @@ EMA_SLOW         = 21
 VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 12
 
+# =========================
+# HARDCODED COIN LIST
+# Format: (ticker, market_cap_string)
+# Update market caps manually once a week
+# Only coins with $200M+ mcap listed on Coinbase
+# =========================
 COINS = [
-    "BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "TRX", "AVAX", "SHIB",
-    "DOT", "LINK", "TON", "MATIC", "UNI", "ICP", "LTC", "APT", "NEAR", "FIL",
-    "ARB", "OP", "ATOM", "VET", "ALGO", "HBAR", "MKR", "AAVE", "GRT", "SAND",
-    "MANA", "AXS", "CRV", "SNX", "COMP", "LDO", "ENS", "1INCH", "BAL", "YFI",
-    "SUSHI", "ZRX", "UMA", "REN", "STORJ", "SKL", "CELO", "FTM", "ROSE", "ZIL",
-    "KAVA", "WAVES", "IOTA", "XTZ", "EOS", "NEO", "XLM", "BCH", "ETC", "DASH",
-    "ZEC", "XMR", "EGLD", "THETA", "CHZ", "HOT", "ANKR", "ONE", "CELR",
-    "DENT", "MTL", "OGN", "BAND", "RLC", "NMR", "BNT", "KNC", "LRC",
-    "OMG", "BAT", "ZEN", "ICX", "ONT", "QTUM", "LSK", "SYS", "STMX",
-    "FUN", "CVC", "REQ", "POL", "OCEAN", "FET", "RNDR", "INJ",
-    "WLD", "SEI", "TIA", "PYTH", "JUP", "BONK", "WIF", "PEPE",
-    "FLOKI", "CFX", "STX", "MINA", "SUI", "APE", "GMT", "GAL", "HIGH",
-    "HOOK", "MAGIC", "DYDX", "GMX", "BLUR", "RPL", "FXS",
-    "SPELL", "PEOPLE", "GLMR", "RUNE", "OSMO", "AKT",
+    ("BTC",   "$1.3T"),
+    ("ETH",   "$320B"),
+    ("SOL",   "$85B"),
+    ("XRP",   "$130B"),
+    ("BNB",   "$90B"),
+    ("DOGE",  "$26B"),
+    ("ADA",   "$22B"),
+    ("TRX",   "$20B"),
+    ("AVAX",  "$15B"),
+    ("SHIB",  "$12B"),
+    ("DOT",   "$10B"),
+    ("LINK",  "$9B"),
+    ("TON",   "$8B"),
+    ("UNI",   "$7B"),
+    ("LTC",   "$7B"),
+    ("APT",   "$6B"),
+    ("NEAR",  "$6B"),
+    ("ICP",   "$5B"),
+    ("FIL",   "$4B"),
+    ("ARB",   "$4B"),
+    ("OP",    "$3B"),
+    ("ATOM",  "$3B"),
+    ("HBAR",  "$3B"),
+    ("MKR",   "$3B"),
+    ("AAVE",  "$3B"),
+    ("VET",   "$2.5B"),
+    ("ALGO",  "$2B"),
+    ("GRT",   "$2B"),
+    ("LDO",   "$2B"),
+    ("RNDR",  "$2B"),
+    ("INJ",   "$2B"),
+    ("IMX",   "$2B"),
+    ("FET",   "$2B"),
+    ("STX",   "$2B"),
+    ("SAND",  "$1.5B"),
+    ("MANA",  "$1.5B"),
+    ("AXS",   "$1.5B"),
+    ("CRV",   "$1.5B"),
+    ("SNX",   "$1.2B"),
+    ("COMP",  "$1.2B"),
+    ("ENS",   "$1B"),
+    ("1INCH", "$900M"),
+    ("YFI",   "$900M"),
+    ("SUSHI", "$800M"),
+    ("ZRX",   "$700M"),
+    ("BAL",   "$700M"),
+    ("OCEAN", "$700M"),
+    ("WLD",   "$700M"),
+    ("SEI",   "$700M"),
+    ("TIA",   "$700M"),
+    ("SUI",   "$700M"),
+    ("PEPE",  "$650B"),
+    ("FLOKI", "$600M"),
+    ("BONK",  "$600M"),
+    ("WIF",   "$600M"),
+    ("PYTH",  "$600M"),
+    ("JUP",   "$600M"),
+    ("DYDX",  "$600M"),
+    ("GMX",   "$600M"),
+    ("RPL",   "$600M"),
+    ("FXS",   "$500M"),
+    ("BLUR",  "$500M"),
+    ("CFX",   "$500M"),
+    ("MINA",  "$500M"),
+    ("APE",   "$500M"),
+    ("GMT",   "$500M"),
+    ("GAL",   "$500M"),
+    ("MAGIC", "$500M"),
+    ("HOOK",  "$400M"),
+    ("PERP",  "$400M"),
+    ("SPELL", "$400M"),
+    ("PEOPLE","$400M"),
+    ("GLMR",  "$400M"),
+    ("RUNE",  "$400M"),
+    ("OSMO",  "$400M"),
+    ("AKT",   "$400M"),
+    ("XLM",   "$4B"),
+    ("BCH",   "$7B"),
+    ("ETC",   "$4B"),
+    ("XTZ",   "$800M"),
+    ("EOS",   "$1B"),
+    ("EGLD",  "$1.5B"),
+    ("THETA", "$1B"),
+    ("CHZ",   "$700M"),
+    ("ANKR",  "$500M"),
+    ("FTM",   "$1B"),
+    ("ROSE",  "$500M"),
+    ("KAVA",  "$600M"),
+    ("WAVES", "$400M"),
+    ("ZIL",   "$400M"),
+    ("ONE",   "$300M"),
+    ("CELR",  "$300M"),
+    ("BAND",  "$300M"),
+    ("NMR",   "$300M"),
+    ("KNC",   "$300M"),
+    ("LRC",   "$300M"),
+    ("BAT",   "$400M"),
+    ("ICX",   "$300M"),
+    ("QTUM",  "$400M"),
+    ("ZEN",   "$300M"),
+    ("ONT",   "$300M"),
+    ("STORJ", "$300M"),
+    ("SKL",   "$300M"),
+    ("CELO",  "$400M"),
+    ("RLC",   "$300M"),
+    ("UMA",   "$300M"),
+    ("OGN",   "$200M"),
+    ("MTL",   "$200M"),
+    ("FUN",   "$200M"),
+    ("REQ",   "$200M"),
+    ("POL",   "$200M"),
 ]
 
 
@@ -55,45 +158,55 @@ def send_alert(message):
 
 
 # =========================
-# BINANCE — GET CANDLES
+# COINBASE — GET CANDLES
 # =========================
 def get_candles(ticker, interval):
-    symbol = ticker + "USDT"
+    granularity_map = {
+        "1h": "ONE_HOUR",
+        "4h": "FOUR_HOUR"
+    }
+    granularity = granularity_map.get(interval)
+    product_id = f"{ticker}-USDT"
     try:
         r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": 150},
+            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
+            params={"granularity": granularity, "limit": 150},
             timeout=10
         )
         data = r.json()
-        if not isinstance(data, list) or len(data) < 50:
+        candles = data.get("candles", [])
+        if not candles or len(candles) < 50:
             return None, None
-        data = data[:-1]
-        closes  = [float(x[4]) for x in data]
-        volumes = [float(x[5]) for x in data]
+        candles = list(reversed(candles))[:-1]
+        closes  = [float(c["close"]) for c in candles]
+        volumes = [float(c["volume"]) for c in candles]
         return closes, volumes
     except:
         return None, None
 
 
 # =========================
-# BINANCE — GET 24H TICKER
+# COINBASE — GET 24H TICKER
 # =========================
 def get_ticker(ticker):
-    symbol = ticker + "USDT"
+    product_id = f"{ticker}-USDT"
     try:
         r = requests.get(
-            "https://api.binance.com/api/v3/ticker/24hr",
-            params={"symbol": symbol},
+            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}",
             timeout=10
         )
         data = r.json()
+        price      = float(data.get("price", 0))
+        change_24h = float(data.get("price_percentage_change_24h", 0))
+        volume_24h = float(data.get("volume_24h", 0))
+        high_24h   = float(data.get("high_52_week", 0))
+        low_24h    = float(data.get("low_52_week", 0))
         return {
-            "price":      float(data.get("lastPrice", 0)),
-            "change_24h": float(data.get("priceChangePercent", 0)),
-            "volume_24h": float(data.get("quoteVolume", 0)),
-            "high_24h":   float(data.get("highPrice", 0)),
-            "low_24h":    float(data.get("lowPrice", 0)),
+            "price":      price,
+            "change_24h": change_24h,
+            "volume_24h": volume_24h,
+            "high_24h":   high_24h,
+            "low_24h":    low_24h,
         }
     except:
         return None
@@ -127,7 +240,6 @@ def volume_above_ma(volumes, candle_index=-1, period=VOLUME_MA_PERIOD):
 def find_cross(closes, lookback=CROSS_LOOKBACK):
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
-
     for i in range(1, lookback + 1):
         curr_idx = -i
         prev_idx = -(i + 1)
@@ -135,12 +247,10 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
         prev_slow = ema_slow[prev_idx]
         curr_fast = ema_fast[curr_idx]
         curr_slow = ema_slow[curr_idx]
-
         if prev_fast <= prev_slow and curr_fast > curr_slow:
             return "BULLISH", i
         if prev_fast >= prev_slow and curr_fast < curr_slow:
             return "BEARISH", i
-
     return None, None
 
 
@@ -152,7 +262,6 @@ def check_signal(closes, volumes):
     if direction is None:
         return None, None, None
 
-    ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
     ema_dist = abs(closes[-1] - ema_slow[-1]) / ema_slow[-1] * 100
 
@@ -171,7 +280,7 @@ def check_signal(closes, volumes):
 
 
 # =========================
-# FORMAT VOLUME
+# FORMAT HELPERS
 # =========================
 def fmt_vol(v):
     if v >= 1_000_000_000:
@@ -180,10 +289,6 @@ def fmt_vol(v):
         return f"${v/1_000_000:.1f}M"
     return f"${v/1_000:.1f}K"
 
-
-# =========================
-# FORMAT PRICE
-# =========================
 def fmt_price(p):
     if p >= 1000:
         return f"${p:,.0f}"
@@ -199,7 +304,7 @@ def scan_timeframe(interval):
     bullish = []
     bearish = []
 
-    for ticker in COINS:
+    for ticker, mcap in COINS:
         closes, volumes = get_candles(ticker, interval)
         if closes is None:
             continue
@@ -209,23 +314,20 @@ def scan_timeframe(interval):
             continue
 
         ticker_data = get_ticker(ticker)
-        if ticker_data is None:
-            continue
-
         signal_label = "S1" if candles_ago == 1 else f"S2({candles_ago})"
         log.info(f"{ticker} [{interval}] {direction} {signal_label}")
 
         entry = {
             "ticker":      ticker,
+            "mcap":        mcap,
             "signal":      signal_label,
-            "candles_ago": candles_ago,
             "ema_dist":    ema_dist,
-            "price":       ticker_data["price"],
-            "change_24h":  ticker_data["change_24h"],
-            "volume_24h":  ticker_data["volume_24h"],
-            "high_24h":    ticker_data["high_24h"],
-            "low_24h":     ticker_data["low_24h"],
-            "tv_link":     f"https://www.tradingview.com/chart/?symbol=BINANCE:{ticker}USDT"
+            "price":       ticker_data["price"] if ticker_data else 0,
+            "change_24h":  ticker_data["change_24h"] if ticker_data else 0,
+            "volume_24h":  ticker_data["volume_24h"] if ticker_data else 0,
+            "high_24h":    ticker_data["high_24h"] if ticker_data else 0,
+            "low_24h":     ticker_data["low_24h"] if ticker_data else 0,
+            "tv_link":     f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USDT"
         }
 
         if direction == "BULLISH":
@@ -233,7 +335,7 @@ def scan_timeframe(interval):
         else:
             bearish.append(entry)
 
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     return bullish, bearish
 
@@ -245,7 +347,7 @@ def fmt_coin(e):
     change = e["change_24h"]
     change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
     return (
-        f"<b>{e['ticker']}</b> [{e['signal']}]\n"
+        f"<b>{e['ticker']}</b> [{e['signal']}] — MCap: {e['mcap']}\n"
         f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
         f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA dist: {e['ema_dist']:.1f}%\n"
         f"📉 Range: {fmt_price(e['low_24h'])} — {fmt_price(e['high_24h'])}\n"

@@ -15,21 +15,123 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 EMA_PERIOD       = 50
 
+# =========================
+# HARDCODED COIN LIST
+# Format: (ticker, market_cap_string)
+# Update market caps manually once a week
+# =========================
 COINS = [
-    "BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "TRX", "AVAX", "SHIB",
-    "DOT", "LINK", "TON", "MATIC", "UNI", "ICP", "LTC", "APT", "NEAR", "FIL",
-    "ARB", "OP", "ATOM", "VET", "ALGO", "HBAR", "MKR", "AAVE", "GRT", "SAND",
-    "MANA", "AXS", "CRV", "SNX", "COMP", "LDO", "ENS", "1INCH", "BAL", "YFI",
-    "SUSHI", "ZRX", "UMA", "REN", "STORJ", "SKL", "CELO", "FTM", "ROSE", "ZIL",
-    "KAVA", "WAVES", "IOTA", "XTZ", "EOS", "NEO", "XLM", "BCH", "ETC", "DASH",
-    "ZEC", "XMR", "EGLD", "THETA", "CHZ", "HOT", "ANKR", "ONE", "CELR",
-    "DENT", "MTL", "OGN", "BAND", "RLC", "NMR", "BNT", "KNC", "LRC",
-    "OMG", "BAT", "ZEN", "ICX", "ONT", "QTUM", "LSK", "SYS", "STMX",
-    "FUN", "CVC", "REQ", "POL", "OCEAN", "FET", "RNDR", "INJ",
-    "WLD", "SEI", "TIA", "PYTH", "JUP", "BONK", "WIF", "PEPE",
-    "FLOKI", "CFX", "STX", "MINA", "SUI", "APE", "GMT", "GAL", "HIGH",
-    "HOOK", "MAGIC", "DYDX", "GMX", "BLUR", "RPL", "FXS",
-    "SPELL", "PEOPLE", "GLMR", "RUNE", "OSMO", "AKT",
+    ("BTC",   "$1.3T"),
+    ("ETH",   "$320B"),
+    ("SOL",   "$85B"),
+    ("XRP",   "$130B"),
+    ("BNB",   "$90B"),
+    ("DOGE",  "$26B"),
+    ("ADA",   "$22B"),
+    ("TRX",   "$20B"),
+    ("AVAX",  "$15B"),
+    ("SHIB",  "$12B"),
+    ("DOT",   "$10B"),
+    ("LINK",  "$9B"),
+    ("TON",   "$8B"),
+    ("UNI",   "$7B"),
+    ("LTC",   "$7B"),
+    ("APT",   "$6B"),
+    ("NEAR",  "$6B"),
+    ("ICP",   "$5B"),
+    ("FIL",   "$4B"),
+    ("ARB",   "$4B"),
+    ("OP",    "$3B"),
+    ("ATOM",  "$3B"),
+    ("HBAR",  "$3B"),
+    ("MKR",   "$3B"),
+    ("AAVE",  "$3B"),
+    ("VET",   "$2.5B"),
+    ("ALGO",  "$2B"),
+    ("GRT",   "$2B"),
+    ("LDO",   "$2B"),
+    ("RNDR",  "$2B"),
+    ("INJ",   "$2B"),
+    ("IMX",   "$2B"),
+    ("FET",   "$2B"),
+    ("STX",   "$2B"),
+    ("SAND",  "$1.5B"),
+    ("MANA",  "$1.5B"),
+    ("AXS",   "$1.5B"),
+    ("CRV",   "$1.5B"),
+    ("SNX",   "$1.2B"),
+    ("COMP",  "$1.2B"),
+    ("ENS",   "$1B"),
+    ("1INCH", "$900M"),
+    ("YFI",   "$900M"),
+    ("SUSHI", "$800M"),
+    ("ZRX",   "$700M"),
+    ("BAL",   "$700M"),
+    ("OCEAN", "$700M"),
+    ("WLD",   "$700M"),
+    ("SEI",   "$700M"),
+    ("TIA",   "$700M"),
+    ("SUI",   "$700M"),
+    ("PEPE",  "$6.5B"),
+    ("FLOKI", "$600M"),
+    ("BONK",  "$600M"),
+    ("WIF",   "$600M"),
+    ("PYTH",  "$600M"),
+    ("JUP",   "$600M"),
+    ("DYDX",  "$600M"),
+    ("GMX",   "$600M"),
+    ("RPL",   "$600M"),
+    ("FXS",   "$500M"),
+    ("BLUR",  "$500M"),
+    ("CFX",   "$500M"),
+    ("MINA",  "$500M"),
+    ("APE",   "$500M"),
+    ("GMT",   "$500M"),
+    ("GAL",   "$500M"),
+    ("MAGIC", "$500M"),
+    ("HOOK",  "$400M"),
+    ("PERP",  "$400M"),
+    ("SPELL", "$400M"),
+    ("PEOPLE","$400M"),
+    ("GLMR",  "$400M"),
+    ("RUNE",  "$400M"),
+    ("OSMO",  "$400M"),
+    ("AKT",   "$400M"),
+    ("XLM",   "$4B"),
+    ("BCH",   "$7B"),
+    ("ETC",   "$4B"),
+    ("XTZ",   "$800M"),
+    ("EOS",   "$1B"),
+    ("EGLD",  "$1.5B"),
+    ("THETA", "$1B"),
+    ("CHZ",   "$700M"),
+    ("ANKR",  "$500M"),
+    ("FTM",   "$1B"),
+    ("ROSE",  "$500M"),
+    ("KAVA",  "$600M"),
+    ("WAVES", "$400M"),
+    ("ZIL",   "$400M"),
+    ("ONE",   "$300M"),
+    ("CELR",  "$300M"),
+    ("BAND",  "$300M"),
+    ("NMR",   "$300M"),
+    ("KNC",   "$300M"),
+    ("LRC",   "$300M"),
+    ("BAT",   "$400M"),
+    ("ICX",   "$300M"),
+    ("QTUM",  "$400M"),
+    ("ZEN",   "$300M"),
+    ("ONT",   "$300M"),
+    ("STORJ", "$300M"),
+    ("SKL",   "$300M"),
+    ("CELO",  "$400M"),
+    ("RLC",   "$300M"),
+    ("UMA",   "$300M"),
+    ("OGN",   "$200M"),
+    ("MTL",   "$200M"),
+    ("FUN",   "$200M"),
+    ("REQ",   "$200M"),
+    ("POL",   "$200M"),
 ]
 
 
@@ -52,51 +154,56 @@ def send_alert(message):
 
 
 # =========================
-# BINANCE — GET CANDLES
+# COINBASE — GET CANDLES
 # =========================
 def get_candles(ticker, interval):
-    symbol = ticker + "USDT"
+    granularity_map = {
+        "1h": "ONE_HOUR",
+        "4h": "FOUR_HOUR"
+    }
+    granularity = granularity_map.get(interval)
+    product_id = f"{ticker}-USDT"
     try:
         r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": 120},
+            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
+            params={"granularity": granularity, "limit": 120},
             timeout=10
         )
         data = r.json()
-        if not isinstance(data, list) or len(data) < 60:
+        candles = data.get("candles", [])
+        if not candles or len(candles) < 60:
             return None
-        data = data[:-1]
+        candles = list(reversed(candles))[:-1]
         return [
             {
-                "open":  float(x[1]),
-                "high":  float(x[2]),
-                "low":   float(x[3]),
-                "close": float(x[4]),
+                "open":  float(c["open"]),
+                "high":  float(c["high"]),
+                "low":   float(c["low"]),
+                "close": float(c["close"]),
             }
-            for x in data
+            for c in candles
         ]
     except:
         return None
 
 
 # =========================
-# BINANCE — GET 24H TICKER
+# COINBASE — GET 24H TICKER
 # =========================
 def get_ticker(ticker):
-    symbol = ticker + "USDT"
+    product_id = f"{ticker}-USDT"
     try:
         r = requests.get(
-            "https://api.binance.com/api/v3/ticker/24hr",
-            params={"symbol": symbol},
+            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}",
             timeout=10
         )
         data = r.json()
         return {
-            "price":      float(data.get("lastPrice", 0)),
-            "change_24h": float(data.get("priceChangePercent", 0)),
-            "volume_24h": float(data.get("quoteVolume", 0)),
-            "high_24h":   float(data.get("highPrice", 0)),
-            "low_24h":    float(data.get("lowPrice", 0)),
+            "price":      float(data.get("price", 0)),
+            "change_24h": float(data.get("price_percentage_change_24h", 0)),
+            "volume_24h": float(data.get("volume_24h", 0)),
+            "high_24h":   float(data.get("high_52_week", 0)),
+            "low_24h":    float(data.get("low_52_week", 0)),
         }
     except:
         return None
@@ -115,8 +222,8 @@ def calc_ema(values, period):
 
 # =========================
 # SIGNAL LOGIC
-# Step 1 — 4H candle touches the 50 EMA (wick or body)
-# Step 2 — 1H candle closes above (bullish) or below (bearish) the 50 EMA
+# Step 1 — 4H candle touches the 50 EMA
+# Step 2 — 1H candle closes above/below the 50 EMA
 # =========================
 def check_4h_touch(candles_4h, ema_4h):
     c   = candles_4h[-1]
@@ -160,7 +267,7 @@ def scan_coins():
     bullish = []
     bearish = []
 
-    for ticker in COINS:
+    for ticker, mcap in COINS:
         candles_4h = get_candles(ticker, "4h")
         if candles_4h is None:
             continue
@@ -183,22 +290,20 @@ def scan_coins():
             continue
 
         ticker_data = get_ticker(ticker)
-        if ticker_data is None:
-            continue
-
         ema_dist = abs(closes_1h[-1] - ema_1h[-1]) / ema_1h[-1] * 100
 
         log.info(f"{ticker} EMA50 touch — {direction}")
 
         entry = {
             "ticker":     ticker,
+            "mcap":       mcap,
             "ema_dist":   ema_dist,
-            "price":      ticker_data["price"],
-            "change_24h": ticker_data["change_24h"],
-            "volume_24h": ticker_data["volume_24h"],
-            "high_24h":   ticker_data["high_24h"],
-            "low_24h":    ticker_data["low_24h"],
-            "tv_link":    f"https://www.tradingview.com/chart/?symbol=BINANCE:{ticker}USDT"
+            "price":      ticker_data["price"] if ticker_data else 0,
+            "change_24h": ticker_data["change_24h"] if ticker_data else 0,
+            "volume_24h": ticker_data["volume_24h"] if ticker_data else 0,
+            "high_24h":   ticker_data["high_24h"] if ticker_data else 0,
+            "low_24h":    ticker_data["low_24h"] if ticker_data else 0,
+            "tv_link":    f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USDT"
         }
 
         if direction == "BULLISH":
@@ -206,7 +311,7 @@ def scan_coins():
         else:
             bearish.append(entry)
 
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     return bullish, bearish
 
@@ -218,7 +323,7 @@ def fmt_coin(e):
     change = e["change_24h"]
     change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
     return (
-        f"<b>{e['ticker']}</b>\n"
+        f"<b>{e['ticker']}</b> — MCap: {e['mcap']}\n"
         f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
         f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA dist: {e['ema_dist']:.1f}%\n"
         f"📉 Range: {fmt_price(e['low_24h'])} — {fmt_price(e['high_24h'])}\n"
