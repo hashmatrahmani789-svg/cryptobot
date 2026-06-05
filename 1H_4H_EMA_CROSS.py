@@ -161,13 +161,15 @@ def get_candles(ticker, interval):
         data = r.json()
         candles = data.get("candles", [])
         if not candles or len(candles) < 50:
-            return None, None
+            return None, None, None, None
         candles = list(reversed(candles))[:-1]
         closes  = [float(c["close"]) for c in candles]
         volumes = [float(c["volume"]) for c in candles]
-        return closes, volumes
+        highs   = [float(c["high"]) for c in candles]
+        lows    = [float(c["low"]) for c in candles]
+        return closes, volumes, highs, lows
     except:
-        return None, None
+        return None, None, None, None
 
 
 def get_ticker(ticker):
@@ -182,8 +184,6 @@ def get_ticker(ticker):
             "price":      float(data.get("price", 0)),
             "change_24h": float(data.get("price_percentage_change_24h", 0)),
             "volume_24h": float(data.get("volume_24h", 0)),
-            "high_24h":   float(data.get("high_52_week", 0)),
-            "low_24h":    float(data.get("low_52_week", 0)),
         }
     except:
         return None
@@ -222,7 +222,8 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
     return None, None
 
 
-def check_signal(closes, volumes):
+def check_signal_1h(closes, volumes):
+    """1H: EMA cross with volume confirmation."""
     direction, candles_ago = find_cross(closes)
     if direction is None:
         return None, None, None
@@ -239,6 +240,16 @@ def check_signal(closes, volumes):
         if cross_vol_was_low and current_vol_high:
             return direction, candles_ago, ema_dist
     return None, None, None
+
+
+def check_signal_4h(closes):
+    """4H: EMA cross only, no volume filter."""
+    direction, candles_ago = find_cross(closes)
+    if direction is None:
+        return None, None, None
+    ema_slow = calc_ema(closes, EMA_SLOW)
+    ema_dist = abs(closes[-1] - ema_slow[-1]) / ema_slow[-1] * 100
+    return direction, candles_ago, ema_dist
 
 
 def fmt_vol(v):
@@ -262,19 +273,28 @@ def scan_timeframe(interval):
     skipped = 0
 
     for ticker, mcap in COINS:
-        closes, volumes = get_candles(ticker, interval)
+        closes, volumes, highs, lows = get_candles(ticker, interval)
         if closes is None:
             log.warning(f"{ticker} [{interval}] — no data")
             skipped += 1
             continue
 
-        direction, candles_ago, ema_dist = check_signal(closes, volumes)
+        if interval == "1h":
+            direction, candles_ago, ema_dist = check_signal_1h(closes, volumes)
+        else:
+            direction, candles_ago, ema_dist = check_signal_4h(closes)
+
         if direction is None:
             continue
 
         ticker_data = get_ticker(ticker)
         signal_label = "S1" if candles_ago == 1 else f"S2({candles_ago})"
         log.info(f"{ticker} [{interval}] {direction} {signal_label}")
+
+        # Cross candle high/low
+        cross_idx = -candles_ago
+        cross_high = highs[cross_idx] if highs else 0
+        cross_low  = lows[cross_idx]  if lows  else 0
 
         entry = {
             "ticker":      ticker,
@@ -284,8 +304,8 @@ def scan_timeframe(interval):
             "price":       ticker_data["price"] if ticker_data else 0,
             "change_24h":  ticker_data["change_24h"] if ticker_data else 0,
             "volume_24h":  ticker_data["volume_24h"] if ticker_data else 0,
-            "high_24h":    ticker_data["high_24h"] if ticker_data else 0,
-            "low_24h":     ticker_data["low_24h"] if ticker_data else 0,
+            "cross_high":  cross_high,
+            "cross_low":   cross_low,
             "tv_link":     f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
         }
 
@@ -307,7 +327,7 @@ def fmt_coin(e):
         f"<b>{e['ticker']}</b> [{e['signal']}] — MCap: {e['mcap']}\n"
         f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
         f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA dist: {e['ema_dist']:.1f}%\n"
-        f"📉 Range: {fmt_price(e['low_24h'])} — {fmt_price(e['high_24h'])}\n"
+        f"📉 Cross candle: {fmt_price(e['cross_low'])} — {fmt_price(e['cross_high'])}\n"
         f"<a href='{e['tv_link']}'>📈 TradingView</a>"
     )
 
