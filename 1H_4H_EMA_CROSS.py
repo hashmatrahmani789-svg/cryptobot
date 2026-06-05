@@ -151,7 +151,7 @@ def send_alert(message):
 def get_candles(ticker, interval):
     granularity_map = {"1h": "ONE_HOUR", "4h": "FOUR_HOUR"}
     granularity = granularity_map.get(interval)
-    product_id = f"{ticker}-USDT"
+   product_id = f"{ticker}-USD"
     try:
         r = requests.get(
             f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
