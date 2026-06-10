@@ -15,7 +15,7 @@ STABLECOINS = {
     # Stablecoins
     "USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP",
     "GUSD", "FRAX", "LUSD", "USDD", "FDUSD", "PYUSD",
-    "USDE", "SUSD", "CUSD", "CEUR", "USDX",
+    "USDE", "SUSD", "CUSD", "CEUR", "USDX", "USD1", "USDS",
     # Wrapped tokens
     "WBTC", "WETH", "STETH", "WSTETH", "CBBTC",
     "WEETH", "RETH", "CBETH", "BETH", "ANKRETH",
