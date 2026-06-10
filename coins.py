@@ -12,8 +12,13 @@ MIN_MCAP      = 500_000_000
 CACHE_TTL     = 86400  # 24 hours
 
 STABLECOINS = {
+    # Stablecoins
     "USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP",
-    "GUSD", "FRAX", "LUSD", "USDD", "FDUSD", "PYUSD"
+    "GUSD", "FRAX", "LUSD", "USDD", "FDUSD", "PYUSD",
+    "USDE", "SUSD", "CUSD", "CEUR", "USDX",
+    # Wrapped tokens
+    "WBTC", "WETH", "STETH", "WSTETH", "CBBTC",
+    "WEETH", "RETH", "CBETH", "BETH", "ANKRETH",
 }
 
 
