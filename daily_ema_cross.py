@@ -3,6 +3,7 @@ import time
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
+from coins import get_coins
 
 logging.basicConfig(
     level=logging.INFO,
@@ -11,136 +12,153 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = "8703493703:AAHGJxuVkRczPDjU1z4hYJ0Pze44URaC0cc"
-TELEGRAM_CHAT_ID = "8118939134"
-MIN_MARKET_CAP   = 50_000_000
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 CROSS_LOOKBACK   = 3
 
-STABLECOINS = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "GUSD", "FRAX", "LUSD", "USDD"}
 
-def send_alert(message: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+def send_alert(message):
     try:
-        res = requests.post(url, json=payload, timeout=10)
-        if res.status_code == 200:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+            timeout=15
+        )
+        if r.status_code == 200:
             log.info("Telegram alert sent.")
         else:
-            log.error(f"Telegram failed: {res.status_code} {res.text}")
+            log.error(f"Telegram error {r.status_code}: {r.text}")
     except Exception as e:
-        log.error(f"Telegram error: {e}")
+        log.error(f"Telegram exception: {e}")
 
-def get_coins_above_mcap():
-    coins = []
-    page = 1
-    while True:
-        try:
-            url = "https://api.coingecko.com/api/v3/coins/markets"
-            params = {
-                "vs_currency": "usd",
-                "order": "market_cap_desc",
-                "per_page": 250,
-                "page": page,
-                "sparkline": False
-            }
-            res = requests.get(url, params=params, timeout=15)
-            data = res.json()
-            if not data:
-                break
-            filtered = [
-                c for c in data
-                if c.get("market_cap", 0) >= MIN_MARKET_CAP
-                and c.get("symbol", "").upper() not in STABLECOINS
-            ]
-            coins.extend(filtered)
-            if data[-1].get("market_cap", 0) < MIN_MARKET_CAP:
-                break
-            page += 1
-            time.sleep(2)
-        except Exception as e:
-            log.error(f"CoinGecko error: {e}")
-            break
-    log.info(f"{len(coins)} coins loaded with mcap > $50M")
-    return coins
 
-def get_candles(symbol: str, limit: int = 60):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": "1d", "limit": limit}
+def get_daily_candles(ticker, limit=60):
+    """Fetch daily candles from Coinbase."""
+    product_id = f"{ticker}-USD"
     try:
-        res = requests.get(url, params=params, timeout=10)
-        data = res.json()
-        if not isinstance(data, list) or len(data) < limit:
+        r = requests.get(
+            f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
+            params={"granularity": "ONE_DAY", "limit": limit},
+            timeout=10
+        )
+        data = r.json()
+        candles = data.get("candles", [])
+        if not candles or len(candles) < 25:
             return None
-        closes = [float(k[4]) for k in data[:-1]]
-        return closes
-    except Exception:
+        candles = list(reversed(candles))[:-1]
+        return [float(c["close"]) for c in candles]
+    except:
         return None
 
-def calc_ema(values: list, period: int) -> list:
+
+def calc_ema(values, period):
     k = 2 / (period + 1)
     ema = [values[0]]
     for v in values[1:]:
         ema.append(v * k + ema[-1] * (1 - k))
     return ema
 
-def check_cross_lookback(closes: list):
+
+def check_cross(closes):
     ema12 = calc_ema(closes, 12)
     ema21 = calc_ema(closes, 21)
-    for i in range(-CROSS_LOOKBACK, 0):
-        prev12, prev21 = ema12[i-1], ema21[i-1]
-        curr12, curr21 = ema12[i], ema21[i]
+    for i in range(1, CROSS_LOOKBACK + 1):
+        curr_idx = -i
+        prev_idx = -(i + 1)
+        prev12, prev21 = ema12[prev_idx], ema21[prev_idx]
+        curr12, curr21 = ema12[curr_idx], ema21[curr_idx]
         if prev12 <= prev21 and curr12 > curr21:
-            return "BULLISH"
+            return "BULLISH", i
         if prev12 >= prev21 and curr12 < curr21:
-            return "BEARISH"
-    return None
+            return "BEARISH", i
+    return None, None
+
+
+def fmt_price(p):
+    if p >= 1000:
+        return f"${p:,.0f}"
+    if p >= 1:
+        return f"${p:.2f}"
+    return f"${p:.6f}"
+
 
 def run_scan():
-    log.info(f"Daily scan running... {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    coins = get_coins_above_mcap()
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    log.info(f"Daily scan running... {now_str}")
+
+    coins = get_coins()
     bullish = []
     bearish = []
+    skipped = 0
 
-    for coin in coins:
-        symbol = coin.get("symbol", "").upper() + "USDT"
-        closes = get_candles(symbol, limit=60)
+    for ticker, mcap in coins:
+        closes = get_daily_candles(ticker)
         if closes is None or len(closes) < 22:
-            time.sleep(0.08)
+            skipped += 1
+            time.sleep(0.1)
             continue
-        cross = check_cross_lookback(closes)
-        if cross == "BULLISH":
-            bullish.append(coin.get("symbol", "").upper())
-        elif cross == "BEARISH":
-            bearish.append(coin.get("symbol", "").upper())
-        time.sleep(0.08)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [f"📊 <b>DAILY EMA 12/21 CROSS</b>\n🕐 {now}"]
+        direction, candles_ago = check_cross(closes)
 
-    if bullish:
-        lines.append(f"\n📈 <b>BULLISH</b> (within 3 days):\n{', '.join(bullish)}")
-    if bearish:
-        lines.append(f"\n📉 <b>BEARISH</b> (within 3 days):\n{', '.join(bearish)}")
+        if direction == "BULLISH":
+            bullish.append((ticker, mcap, closes[-1], candles_ago))
+            log.info(f"{ticker} DAILY BULLISH cross ({candles_ago}d ago)")
+        elif direction == "BEARISH":
+            bearish.append((ticker, mcap, closes[-1], candles_ago))
+            log.info(f"{ticker} DAILY BEARISH cross ({candles_ago}d ago)")
+
+        time.sleep(0.1)
+
+    log.info(f"{skipped} coins skipped — no data")
+
     if not bullish and not bearish:
-        log.info("No crosses found.")
+        log.info("No daily crosses found.")
         return
 
+    lines = [
+        "📅 <b>DAILY EMA 12/21 — Cross Alert</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"🕐 {now_str}"
+    ]
+
+    if bullish:
+        lines.append("\n📈 <b>Bullish Crosses</b>")
+        for ticker, mcap, price, days_ago in bullish:
+            days_str = "today" if days_ago == 1 else f"{days_ago}d ago"
+            lines.append(
+                f"<b>{ticker}</b> — MCap: {mcap}\n"
+                f"💰 {fmt_price(price)} | Cross: {days_str}\n"
+                f"<a href='https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD'>📈 TradingView</a>"
+            )
+
+    if bearish:
+        lines.append("\n📉 <b>Bearish Crosses</b>")
+        for ticker, mcap, price, days_ago in bearish:
+            days_str = "today" if days_ago == 1 else f"{days_ago}d ago"
+            lines.append(
+                f"<b>{ticker}</b> — MCap: {mcap}\n"
+                f"💰 {fmt_price(price)} | Cross: {days_str}\n"
+                f"<a href='https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD'>📈 TradingView</a>"
+            )
+
     send_alert("\n".join(lines))
-    log.info("Scan complete.")
+    log.info("Daily scan complete.")
+
 
 def wait_until_daily_close():
+    """Wait until 00:05 UTC (5 min after daily candle close)."""
     now = datetime.now(timezone.utc)
-    # Daily candle closes at 00:00 UTC, scan at 00:05 UTC
     next_run = now.replace(hour=0, minute=5, second=0, microsecond=0)
     if now >= next_run:
         next_run += timedelta(days=1)
     sleep_secs = (next_run - now).total_seconds()
-    log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
+    log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/3600:.1f}h")
     time.sleep(sleep_secs)
 
+
 if __name__ == "__main__":
-    log.info("Daily EMA 12/21 Cross Signal started.")
-    send_alert("✅ Daily EMA Cross bot started and running!")
+    log.info("Daily EMA 12/21 Cross Scanner started.")
+    send_alert("✅ <b>Daily EMA Scanner Online</b>\nScanning daily candles every day at 00:05 UTC.")
     while True:
         wait_until_daily_close()
         run_scan()

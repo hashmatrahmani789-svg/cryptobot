@@ -3,6 +3,7 @@ import time
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
+from coins import get_coins
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,120 +15,6 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 EMA_PERIOD       = 50
-
-COINS = [
-    ("BTC",   "$1.3T"),
-    ("ETH",   "$320B"),
-    ("SOL",   "$85B"),
-    ("XRP",   "$130B"),
-    ("BNB",   "$90B"),
-    ("DOGE",  "$26B"),
-    ("ADA",   "$22B"),
-    ("TRX",   "$20B"),
-    ("AVAX",  "$15B"),
-    ("SHIB",  "$12B"),
-    ("DOT",   "$10B"),
-    ("LINK",  "$9B"),
-    ("TON",   "$8B"),
-    ("UNI",   "$7B"),
-    ("LTC",   "$7B"),
-    ("BCH",   "$7B"),
-    ("APT",   "$6B"),
-    ("NEAR",  "$6B"),
-    ("XLM",   "$4B"),
-    ("ICP",   "$5B"),
-    ("FIL",   "$4B"),
-    ("ETC",   "$4B"),
-    ("ARB",   "$4B"),
-    ("OP",    "$3B"),
-    ("ATOM",  "$3B"),
-    ("HBAR",  "$3B"),
-    ("MKR",   "$3B"),
-    ("AAVE",  "$3B"),
-    ("PEPE",  "$6.5B"),
-    ("VET",   "$2.5B"),
-    ("ALGO",  "$2B"),
-    ("GRT",   "$2B"),
-    ("LDO",   "$2B"),
-    ("RNDR",  "$2B"),
-    ("INJ",   "$2B"),
-    ("IMX",   "$2B"),
-    ("FET",   "$2B"),
-    ("STX",   "$2B"),
-    ("SUI",   "$700M"),
-    ("SAND",  "$1.5B"),
-    ("MANA",  "$1.5B"),
-    ("AXS",   "$1.5B"),
-    ("CRV",   "$1.5B"),
-    ("EGLD",  "$1.5B"),
-    ("SNX",   "$1.2B"),
-    ("COMP",  "$1.2B"),
-    ("EOS",   "$1B"),
-    ("THETA", "$1B"),
-    ("FTM",   "$1B"),
-    ("ENS",   "$1B"),
-    ("XTZ",   "$800M"),
-    ("SUSHI", "$800M"),
-    ("1INCH", "$900M"),
-    ("YFI",   "$900M"),
-    ("ZRX",   "$700M"),
-    ("BAL",   "$700M"),
-    ("OCEAN", "$700M"),
-    ("WLD",   "$700M"),
-    ("SEI",   "$700M"),
-    ("TIA",   "$700M"),
-    ("CHZ",   "$700M"),
-    ("FLOKI", "$600M"),
-    ("BONK",  "$600M"),
-    ("WIF",   "$600M"),
-    ("PYTH",  "$600M"),
-    ("JUP",   "$600M"),
-    ("DYDX",  "$600M"),
-    ("GMX",   "$600M"),
-    ("RPL",   "$600M"),
-    ("KAVA",  "$600M"),
-    ("FXS",   "$500M"),
-    ("BLUR",  "$500M"),
-    ("CFX",   "$500M"),
-    ("MINA",  "$500M"),
-    ("APE",   "$500M"),
-    ("GMT",   "$500M"),
-    ("GAL",   "$500M"),
-    ("MAGIC", "$500M"),
-    ("ANKR",  "$500M"),
-    ("ROSE",  "$500M"),
-    ("CELO",  "$400M"),
-    ("BAT",   "$400M"),
-    ("QTUM",  "$400M"),
-    ("RUNE",  "$400M"),
-    ("WAVES", "$400M"),
-    ("ZIL",   "$400M"),
-    ("HOOK",  "$400M"),
-    ("PERP",  "$400M"),
-    ("SPELL", "$400M"),
-    ("PEOPLE","$400M"),
-    ("GLMR",  "$400M"),
-    ("OSMO",  "$400M"),
-    ("AKT",   "$400M"),
-    ("ONE",   "$300M"),
-    ("CELR",  "$300M"),
-    ("BAND",  "$300M"),
-    ("NMR",   "$300M"),
-    ("KNC",   "$300M"),
-    ("LRC",   "$300M"),
-    ("ICX",   "$300M"),
-    ("ZEN",   "$300M"),
-    ("ONT",   "$300M"),
-    ("STORJ", "$300M"),
-    ("SKL",   "$300M"),
-    ("RLC",   "$300M"),
-    ("UMA",   "$300M"),
-    ("OGN",   "$200M"),
-    ("MTL",   "$200M"),
-    ("FUN",   "$200M"),
-    ("REQ",   "$200M"),
-    ("POL",   "$200M"),
-]
 
 
 def send_alert(message):
@@ -224,6 +111,7 @@ def fmt_vol(v):
         return f"${v/1_000_000:.1f}M"
     return f"${v/1_000:.1f}K"
 
+
 def fmt_price(p):
     if p >= 1000:
         return f"${p:,.0f}"
@@ -232,12 +120,12 @@ def fmt_price(p):
     return f"${p:.6f}"
 
 
-def scan_coins():
+def scan_coins(coins):
     bullish = []
     bearish = []
     skipped = 0
 
-    for ticker, mcap in COINS:
+    for ticker, mcap in coins:
         candles_4h = get_candles(ticker, "4h")
         if candles_4h is None:
             log.warning(f"{ticker} — no 4h data")
@@ -272,11 +160,11 @@ def scan_coins():
             "ticker":     ticker,
             "mcap":       mcap,
             "ema_dist":   ema_dist,
-            "price":      ticker_data["price"] if ticker_data else 0,
+            "price":      ticker_data["price"]      if ticker_data else 0,
             "change_24h": ticker_data["change_24h"] if ticker_data else 0,
             "volume_24h": ticker_data["volume_24h"] if ticker_data else 0,
-            "high_24h":   ticker_data["high_24h"] if ticker_data else 0,
-            "low_24h":    ticker_data["low_24h"] if ticker_data else 0,
+            "high_24h":   ticker_data["high_24h"]   if ticker_data else 0,
+            "low_24h":    ticker_data["low_24h"]    if ticker_data else 0,
             "tv_link":    f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
         }
 
@@ -331,7 +219,8 @@ def build_message(bullish, bearish, now_str):
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
-    bullish, bearish = scan_coins()
+    coins = get_coins()
+    bullish, bearish = scan_coins(coins)
     msg = build_message(bullish, bearish, now_str)
     send_alert(msg)
     log.info("Scan complete.")
