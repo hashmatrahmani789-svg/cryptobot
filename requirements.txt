@@ -1,1 +1,3 @@
 requests
+ccxt
+python-telegram-bot
