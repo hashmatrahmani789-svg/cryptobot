@@ -1,0 +1,1 @@
+worker: python daily_ema_cross.py
