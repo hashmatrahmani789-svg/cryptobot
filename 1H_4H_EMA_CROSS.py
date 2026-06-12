@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
@@ -18,6 +19,31 @@ EMA_FAST         = 12
 EMA_SLOW         = 21
 VOLUME_MA_PERIOD = 20
 CROSS_LOOKBACK   = 12
+
+SIGNAL_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_memory_1h4h.json")
+
+
+def load_memory():
+    if os.path.exists(SIGNAL_MEMORY_FILE):
+        try:
+            with open(SIGNAL_MEMORY_FILE) as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+
+def save_memory(memory):
+    try:
+        with open(SIGNAL_MEMORY_FILE, "w") as f:
+            json.dump(memory, f)
+    except Exception as e:
+        log.error(f"Memory save error: {e}")
+
+
+def is_new_signal(memory, key, direction):
+    """Returns True if this is a new signal (not already fired)."""
+    return memory.get(key) != direction
 
 
 def send_alert(message):
@@ -110,7 +136,6 @@ def find_cross(closes, lookback=CROSS_LOOKBACK):
 
 
 def check_signal_1h(closes, volumes):
-    """1H: EMA cross with volume confirmation."""
     direction, candles_ago = find_cross(closes)
     if direction is None:
         return None, None, None
@@ -130,7 +155,6 @@ def check_signal_1h(closes, volumes):
 
 
 def check_signal_4h(closes):
-    """4H: EMA cross only, no volume filter."""
     direction, candles_ago = find_cross(closes)
     if direction is None:
         return None, None, None
@@ -155,10 +179,11 @@ def fmt_price(p):
     return f"${p:.6f}"
 
 
-def scan_timeframe(interval, coins):
+def scan_timeframe(interval, coins, memory):
     bullish = []
     bearish = []
     skipped = 0
+    new_memory = {}
 
     for ticker, mcap in coins:
         closes, volumes, highs, lows = get_candles(ticker, interval)
@@ -175,9 +200,17 @@ def scan_timeframe(interval, coins):
         if direction is None:
             continue
 
+        key = f"{ticker}_{interval}"
+
+        # Only fire if this is a new signal
+        if not is_new_signal(memory, key, direction):
+            log.info(f"{ticker} [{interval}] {direction} — already fired, skipping")
+            new_memory[key] = direction
+            continue
+
         ticker_data = get_ticker(ticker)
         signal_label = "S1" if candles_ago == 1 else f"S2({candles_ago})"
-        log.info(f"{ticker} [{interval}] {direction} {signal_label}")
+        log.info(f"{ticker} [{interval}] {direction} {signal_label} — NEW signal")
 
         cross_idx  = -candles_ago
         cross_high = highs[cross_idx] if highs else 0
@@ -196,6 +229,8 @@ def scan_timeframe(interval, coins):
             "tv_link":    f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
         }
 
+        new_memory[key] = direction
+
         if direction == "BULLISH":
             bullish.append(entry)
         else:
@@ -204,7 +239,7 @@ def scan_timeframe(interval, coins):
         time.sleep(0.1)
 
     log.info(f"[{interval}] {skipped} coins skipped — no data from Coinbase")
-    return bullish, bearish
+    return bullish, bearish, new_memory
 
 
 def fmt_coin(e):
@@ -226,7 +261,7 @@ def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
         return (
             f"🔍 <b>EMA 12/21 Scan</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"No crosses found on 1H or 4H\n\n"
+            f"No new crosses found on 1H or 4H\n\n"
             f"🕐 {now_str}"
         )
 
@@ -262,8 +297,16 @@ def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
     coins = get_coins()
-    bullish_1h, bearish_1h = scan_timeframe("1h", coins)
-    bullish_4h, bearish_4h = scan_timeframe("4h", coins)
+    memory = load_memory()
+
+    bullish_1h, bearish_1h, new_mem_1h = scan_timeframe("1h", coins, memory)
+    bullish_4h, bearish_4h, new_mem_4h = scan_timeframe("4h", coins, memory)
+
+    # Merge and save updated memory
+    memory.update(new_mem_1h)
+    memory.update(new_mem_4h)
+    save_memory(memory)
+
     msg = build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str)
     send_alert(msg)
     log.info("Scan complete.")

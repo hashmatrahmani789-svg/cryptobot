@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
@@ -15,7 +16,8 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 CROSS_LOOKBACK   = 3
 
-# ── Stablecoins to exclude ──────────────────────────────────────────────────
+SIGNAL_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_memory_daily.json")
+
 STABLECOINS = {
     "USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "USDD", "GUSD",
     "FRAX", "LUSD", "SUSD", "CUSD", "EURC", "PYUSD", "FDUSD", "USDE",
@@ -23,11 +25,7 @@ STABLECOINS = {
     "EURT", "XAUT", "PAXG"
 }
 
-# ── Coin list with market cap tiers ─────────────────────────────────────────
-# Format: (ticker, market_cap_usd)
-# Only coins >= $200M market cap for spot trading
 COINS = [
-    # Mega cap > $10B
     ("BTC",   2_000_000_000_000),
     ("ETH",   400_000_000_000),
     ("BNB",   90_000_000_000),
@@ -38,7 +36,6 @@ COINS = [
     ("DOT",   10_000_000_000),
     ("LINK",  10_000_000_000),
     ("TON",   10_000_000_000),
-    # Large cap $1B–$10B
     ("MATIC", 8_000_000_000),
     ("UNI",   6_000_000_000),
     ("ATOM",  4_000_000_000),
@@ -69,7 +66,6 @@ COINS = [
     ("SNX",   800_000_000),
     ("CRV",   600_000_000),
     ("ZEC",   500_000_000),
-    # Mid cap $200M–$1B
     ("ALGO",  900_000_000),
     ("SAND",  700_000_000),
     ("MANA",  600_000_000),
@@ -79,6 +75,28 @@ COINS = [
     ("SUSHI", 250_000_000),
     ("BAL",   200_000_000),
 ]
+
+
+def load_memory():
+    if os.path.exists(SIGNAL_MEMORY_FILE):
+        try:
+            with open(SIGNAL_MEMORY_FILE) as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+
+def save_memory(memory):
+    try:
+        with open(SIGNAL_MEMORY_FILE, "w") as f:
+            json.dump(memory, f)
+    except Exception as e:
+        log.error(f"Memory save error: {e}")
+
+
+def is_new_signal(memory, key, direction):
+    return memory.get(key) != direction
 
 
 def send_alert(message):
@@ -100,7 +118,6 @@ def send_alert(message):
 
 
 def get_daily_candles(ticker, limit=60):
-    """Fetch daily candles from Coinbase."""
     product_id = f"{ticker}-USD"
     try:
         r = requests.get(
@@ -121,9 +138,7 @@ def get_daily_candles(ticker, limit=60):
 
 
 def get_coin_stats(ticker):
-    """Fetch 24h change, volume, and market cap from CoinGecko."""
     try:
-        # Map ticker to CoinGecko id for common coins
         id_map = {
             "BTC": "bitcoin", "ETH": "ethereum", "BNB": "binancecoin",
             "SOL": "solana", "XRP": "ripple", "ADA": "cardano",
@@ -158,10 +173,7 @@ def get_coin_stats(ticker):
             timeout=10
         )
         d = r.json().get(cg_id, {})
-        change = d.get("usd_24h_change")
-        volume = d.get("usd_24h_vol")
-        mcap   = d.get("usd_market_cap")
-        return change, volume, mcap
+        return d.get("usd_24h_change"), d.get("usd_24h_vol"), d.get("usd_market_cap")
     except:
         return None, None, None
 
@@ -211,17 +223,17 @@ def fmt_vol(v):
 
 def get_mcap_tier(mcap_usd):
     if mcap_usd >= 10_000_000_000:
-        return "MEGA"   # > $10B
+        return "MEGA"
     if mcap_usd >= 1_000_000_000:
-        return "LARGE"  # $1B–$10B
-    return "MID"        # $200M–$1B
+        return "LARGE"
+    return "MID"
 
 
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Daily scan running... {now_str}")
 
-    # Separate buckets: mega+large (>$1B) vs mid ($200M-$1B)
+    memory = load_memory()
     mega_large_bullish = []
     mega_large_bearish = []
     mid_bullish = []
@@ -229,7 +241,6 @@ def run_scan():
     skipped = 0
 
     for ticker, static_mcap in COINS:
-        # Skip stablecoins
         if ticker in STABLECOINS:
             continue
 
@@ -245,9 +256,14 @@ def run_scan():
             time.sleep(0.2)
             continue
 
-        # Get live stats from CoinGecko
+        key = f"{ticker}_daily"
+
+        if not is_new_signal(memory, key, direction):
+            log.info(f"{ticker} DAILY {direction} — already fired, skipping")
+            continue
+
         change_24h, vol_24h, live_mcap = get_coin_stats(ticker)
-        time.sleep(0.5)  # respect CoinGecko rate limit
+        time.sleep(0.5)
 
         mcap_usd  = live_mcap if live_mcap else static_mcap
         tier      = get_mcap_tier(mcap_usd)
@@ -269,29 +285,31 @@ def run_scan():
             "tier":       tier,
         }
 
+        memory[key] = direction
+
         if tier in ("MEGA", "LARGE"):
             if direction == "BULLISH":
                 mega_large_bullish.append(entry)
-                log.info(f"{ticker} [{tier}] DAILY BULLISH cross ({candles_ago}d ago)")
+                log.info(f"{ticker} [{tier}] DAILY BULLISH cross ({candles_ago}d ago) — NEW")
             else:
                 mega_large_bearish.append(entry)
-                log.info(f"{ticker} [{tier}] DAILY BEARISH cross ({candles_ago}d ago)")
+                log.info(f"{ticker} [{tier}] DAILY BEARISH cross ({candles_ago}d ago) — NEW")
         else:
             if direction == "BULLISH":
                 mid_bullish.append(entry)
-                log.info(f"{ticker} [MID] DAILY BULLISH cross ({candles_ago}d ago)")
+                log.info(f"{ticker} [MID] DAILY BULLISH cross ({candles_ago}d ago) — NEW")
             else:
                 mid_bearish.append(entry)
-                log.info(f"{ticker} [MID] DAILY BEARISH cross ({candles_ago}d ago)")
+                log.info(f"{ticker} [MID] DAILY BEARISH cross ({candles_ago}d ago) — NEW")
 
+    save_memory(memory)
     log.info(f"{skipped} coins skipped — no data")
 
     total = len(mega_large_bullish) + len(mega_large_bearish) + len(mid_bullish) + len(mid_bearish)
     if total == 0:
-        log.info("No daily crosses found.")
+        log.info("No new daily crosses found.")
         return
 
-    # ── Send alert for Large/Mega cap (> $1B) ───────────────────────────────
     if mega_large_bullish or mega_large_bearish:
         lines = [
             "🏆 <b>DAILY EMA 12/21 — LARGE CAP SIGNAL</b>",
@@ -305,13 +323,12 @@ def run_scan():
                 days_str   = "today" if e["days_ago"] == 1 else f"{e['days_ago']}d ago"
                 change_str = f"{e['change_24h']:+.2f}%" if e["change_24h"] is not None else "N/A"
                 vol_str    = fmt_vol(e["vol_24h"]) if e["vol_24h"] else "N/A"
-                mcap_str   = fmt_mcap(e["mcap"])
                 vol_surge  = f" 🔥 Vol x{e['vol_ratio']:.1f}" if e["vol_ratio"] > 1.5 else ""
                 lines.append(
                     f"\n<b>{e['ticker']}</b> [{e['tier']}]{vol_surge}\n"
                     f"💰 Price: {fmt_price(e['price'])}\n"
                     f"📊 24h Change: {change_str}\n"
-                    f"💎 Market Cap: {mcap_str}\n"
+                    f"💎 Market Cap: {fmt_mcap(e['mcap'])}\n"
                     f"📦 24h Volume: {vol_str}\n"
                     f"📅 Cross: {days_str}\n"
                     f"📉 EMA12: {fmt_price(e['ema12'])} | EMA21: {fmt_price(e['ema21'])}\n"
@@ -324,13 +341,12 @@ def run_scan():
                 days_str   = "today" if e["days_ago"] == 1 else f"{e['days_ago']}d ago"
                 change_str = f"{e['change_24h']:+.2f}%" if e["change_24h"] is not None else "N/A"
                 vol_str    = fmt_vol(e["vol_24h"]) if e["vol_24h"] else "N/A"
-                mcap_str   = fmt_mcap(e["mcap"])
                 vol_surge  = f" 🔥 Vol x{e['vol_ratio']:.1f}" if e["vol_ratio"] > 1.5 else ""
                 lines.append(
                     f"\n<b>{e['ticker']}</b> [{e['tier']}]{vol_surge}\n"
                     f"💰 Price: {fmt_price(e['price'])}\n"
                     f"📊 24h Change: {change_str}\n"
-                    f"💎 Market Cap: {mcap_str}\n"
+                    f"💎 Market Cap: {fmt_mcap(e['mcap'])}\n"
                     f"📦 24h Volume: {vol_str}\n"
                     f"📅 Cross: {days_str}\n"
                     f"📉 EMA12: {fmt_price(e['ema12'])} | EMA21: {fmt_price(e['ema21'])}\n"
@@ -339,7 +355,6 @@ def run_scan():
 
         send_alert("\n".join(lines))
 
-    # ── Send alert for Mid cap ($200M–$1B) ──────────────────────────────────
     if mid_bullish or mid_bearish:
         lines = [
             "📡 <b>DAILY EMA 12/21 — MID CAP SIGNAL</b>",
@@ -354,12 +369,11 @@ def run_scan():
                 days_str   = "today" if e["days_ago"] == 1 else f"{e['days_ago']}d ago"
                 change_str = f"{e['change_24h']:+.2f}%" if e["change_24h"] is not None else "N/A"
                 vol_str    = fmt_vol(e["vol_24h"]) if e["vol_24h"] else "N/A"
-                mcap_str   = fmt_mcap(e["mcap"])
                 lines.append(
                     f"\n<b>{e['ticker']}</b> [MID]\n"
                     f"💰 Price: {fmt_price(e['price'])}\n"
                     f"📊 24h Change: {change_str}\n"
-                    f"💎 Market Cap: {mcap_str}\n"
+                    f"💎 Market Cap: {fmt_mcap(e['mcap'])}\n"
                     f"📦 24h Volume: {vol_str}\n"
                     f"📅 Cross: {days_str}\n"
                     f"<a href='https://www.tradingview.com/chart/?symbol=COINBASE:{e['ticker']}USD'>📈 Chart</a>"
@@ -371,12 +385,11 @@ def run_scan():
                 days_str   = "today" if e["days_ago"] == 1 else f"{e['days_ago']}d ago"
                 change_str = f"{e['change_24h']:+.2f}%" if e["change_24h"] is not None else "N/A"
                 vol_str    = fmt_vol(e["vol_24h"]) if e["vol_24h"] else "N/A"
-                mcap_str   = fmt_mcap(e["mcap"])
                 lines.append(
                     f"\n<b>{e['ticker']}</b> [MID]\n"
                     f"💰 Price: {fmt_price(e['price'])}\n"
                     f"📊 24h Change: {change_str}\n"
-                    f"💎 Market Cap: {mcap_str}\n"
+                    f"💎 Market Cap: {fmt_mcap(e['mcap'])}\n"
                     f"📦 24h Volume: {vol_str}\n"
                     f"📅 Cross: {days_str}\n"
                     f"<a href='https://www.tradingview.com/chart/?symbol=COINBASE:{e['ticker']}USD'>📈 Chart</a>"
@@ -388,7 +401,6 @@ def run_scan():
 
 
 def wait_until_daily_close():
-    """Wait until 00:05 UTC (5 min after daily candle close)."""
     now = datetime.now(timezone.utc)
     next_run = now.replace(hour=0, minute=5, second=0, microsecond=0)
     if now >= next_run:

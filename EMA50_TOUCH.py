@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
@@ -15,6 +16,30 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 EMA_PERIOD       = 50
+
+SIGNAL_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_memory_ema50.json")
+
+
+def load_memory():
+    if os.path.exists(SIGNAL_MEMORY_FILE):
+        try:
+            with open(SIGNAL_MEMORY_FILE) as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+
+def save_memory(memory):
+    try:
+        with open(SIGNAL_MEMORY_FILE, "w") as f:
+            json.dump(memory, f)
+    except Exception as e:
+        log.error(f"Memory save error: {e}")
+
+
+def is_new_signal(memory, key, direction):
+    return memory.get(key) != direction
 
 
 def send_alert(message):
@@ -120,10 +145,11 @@ def fmt_price(p):
     return f"${p:.6f}"
 
 
-def scan_coins(coins):
+def scan_coins(coins, memory):
     bullish = []
     bearish = []
     skipped = 0
+    new_memory = {}
 
     for ticker, mcap in coins:
         candles_4h = get_candles(ticker, "4h")
@@ -151,10 +177,17 @@ def scan_coins(coins):
         if direction is None:
             continue
 
+        key = f"{ticker}_ema50"
+
+        if not is_new_signal(memory, key, direction):
+            log.info(f"{ticker} EMA50 {direction} — already fired, skipping")
+            new_memory[key] = direction
+            continue
+
         ticker_data = get_ticker(ticker)
         ema_dist = abs(closes_1h[-1] - ema_1h[-1]) / ema_1h[-1] * 100
 
-        log.info(f"{ticker} EMA50 touch — {direction}")
+        log.info(f"{ticker} EMA50 touch — {direction} — NEW signal")
 
         entry = {
             "ticker":     ticker,
@@ -168,6 +201,8 @@ def scan_coins(coins):
             "tv_link":    f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
         }
 
+        new_memory[key] = direction
+
         if direction == "BULLISH":
             bullish.append(entry)
         else:
@@ -176,7 +211,7 @@ def scan_coins(coins):
         time.sleep(0.1)
 
     log.info(f"{skipped} coins skipped — no data from Coinbase")
-    return bullish, bearish
+    return bullish, bearish, new_memory
 
 
 def fmt_coin(e):
@@ -196,7 +231,7 @@ def build_message(bullish, bearish, now_str):
         return (
             f"🔍 <b>EMA 50 Scan</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"No 4H touches confirmed on 1H\n\n"
+            f"No new 4H touches confirmed on 1H\n\n"
             f"🕐 {now_str}"
         )
 
@@ -220,7 +255,10 @@ def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
     coins = get_coins()
-    bullish, bearish = scan_coins(coins)
+    memory = load_memory()
+    bullish, bearish, new_memory = scan_coins(coins, memory)
+    memory.update(new_memory)
+    save_memory(memory)
     msg = build_message(bullish, bearish, now_str)
     send_alert(msg)
     log.info("Scan complete.")
