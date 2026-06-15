@@ -8,7 +8,7 @@ from coins import get_coins
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [EMA50-PULLBACK] %(message)s",
+    format="%(asctime)s [EMA50] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger(__name__)
@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 EMA_PERIOD       = 50
+ZONE_TOLERANCE   = 0.003  # 0.3% zone around EMA50 = "inside"
 
 SIGNAL_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_memory_ema50.json")
 
@@ -38,15 +39,23 @@ def save_memory(memory):
         log.error(f"Memory save error: {e}")
 
 
-def is_new_signal(memory, key, direction):
-    return memory.get(key) != direction
+def is_new_signal(memory, key, value):
+    return memory.get(key) != value
 
 
 def send_alert(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        log.error("Telegram credentials missing.")
+        return
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            },
             timeout=15
         )
         if r.status_code == 200:
@@ -97,8 +106,6 @@ def get_ticker(ticker):
             "price":      float(data.get("price", 0)),
             "change_24h": float(data.get("price_percentage_change_24h", 0)),
             "volume_24h": float(data.get("volume_24h", 0)),
-            "high_24h":   float(data.get("high_52_week", 0)),
-            "low_24h":    float(data.get("low_52_week", 0)),
         }
     except:
         return None
@@ -112,33 +119,6 @@ def calc_ema(values, period):
     return ema
 
 
-def check_4h_touch(candles_4h, ema_4h):
-    c   = candles_4h[-1]
-    e   = ema_4h[-1]
-    tol = e * 0.003
-    return c["low"] <= e + tol and c["high"] >= e - tol
-
-
-def check_4h_close(candles_4h, ema_4h):
-    c = candles_4h[-1]
-    e = ema_4h[-1]
-    if c["close"] > e:
-        return "BULLISH"
-    if c["close"] < e:
-        return "BEARISH"
-    return None
-
-
-def check_1h_confirmation(candles_1h, ema_1h):
-    c = candles_1h[-1]
-    e = ema_1h[-1]
-    if c["close"] > e:
-        return "BULLISH"
-    if c["close"] < e:
-        return "BEARISH"
-    return None
-
-
 def fmt_vol(v):
     if v >= 1_000_000_000:
         return f"${v/1_000_000_000:.1f}B"
@@ -148,147 +128,166 @@ def fmt_vol(v):
 
 
 def fmt_price(p):
+    if not p or p == 0:
+        return "N/A"
     if p >= 1000:
-        return f"${p:,.0f}"
+        return f"${p:,.2f}"
     if p >= 1:
-        return f"${p:.2f}"
+        return f"${p:.4f}"
     return f"${p:.6f}"
 
 
-def scan_coins(coins, memory):
-    bullish = []
-    bearish = []
-    skipped = 0
-    new_memory = {}
-
-    for ticker, mcap in coins:
-        candles_4h = get_candles(ticker, "4h")
-        if candles_4h is None:
-            log.warning(f"{ticker} — no 4h data")
-            skipped += 1
-            continue
-
-        candles_1h = get_candles(ticker, "1h")
-        if candles_1h is None:
-            log.warning(f"{ticker} — no 1h data")
-            skipped += 1
-            continue
-
-        closes_4h = [c["close"] for c in candles_4h]
-        closes_1h = [c["close"] for c in candles_1h]
-
-        ema_4h = calc_ema(closes_4h, EMA_PERIOD)
-        ema_1h = calc_ema(closes_1h, EMA_PERIOD)
-
-        # 1) 4H must touch the EMA 50 zone
-        if not check_4h_touch(candles_4h, ema_4h):
-            continue
-
-        # 2) 4H must CLOSE in a direction relative to EMA 50
-        dir_4h = check_4h_close(candles_4h, ema_4h)
-        if dir_4h is None:
-            continue
-
-        # 3) 1H must confirm the SAME direction
-        dir_1h = check_1h_confirmation(candles_1h, ema_1h)
-        if dir_1h is None:
-            continue
-
-        # 4) both timeframes must agree
-        if dir_4h != dir_1h:
-            log.info(f"{ticker} EMA50 — 4H/1H mismatch ({dir_4h}/{dir_1h}), skipping")
-            continue
-
-        direction = dir_4h
-        key = f"{ticker}_ema50_pullback"
-
-        if not is_new_signal(memory, key, direction):
-            log.info(f"{ticker} EMA50 {direction} — already fired, skipping")
-            new_memory[key] = direction
-            continue
-
-        ticker_data = get_ticker(ticker)
-        ema_dist     = abs(closes_1h[-1] - ema_1h[-1]) / ema_1h[-1] * 100
-        ema_dist_4h  = abs(closes_4h[-1] - ema_4h[-1]) / ema_4h[-1] * 100
-
-        log.info(f"{ticker} EMA50 touch + 4H close + 1H confirm — {direction} — NEW signal")
-
-        entry = {
-            "ticker":      ticker,
-            "mcap":        mcap,
-            "direction":   direction,
-            "ema_dist":    ema_dist,
-            "ema_dist_4h": ema_dist_4h,
-            "price":      ticker_data["price"]      if ticker_data else 0,
-            "change_24h": ticker_data["change_24h"] if ticker_data else 0,
-            "volume_24h": ticker_data["volume_24h"] if ticker_data else 0,
-            "high_24h":   ticker_data["high_24h"]   if ticker_data else 0,
-            "low_24h":    ticker_data["low_24h"]    if ticker_data else 0,
-            "tv_link":    f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
-        }
-
-        new_memory[key] = direction
-
-        if direction == "BULLISH":
-            bullish.append(entry)
-        else:
-            bearish.append(entry)
-
-        time.sleep(0.1)
-
-    log.info(f"{skipped} coins skipped — no data from Coinbase")
-    return bullish, bearish, new_memory
-
-
-def fmt_coin(e):
-    change = e["change_24h"]
-    change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
-    close_dir = "above ✅" if e["direction"] == "BULLISH" else "below ✅"
+def fmt_entry(e):
+    change_str = f"{e['change_24h']:+.2f}%"
     return (
-        f"<b>{e['ticker']}</b> — MCap: {e['mcap']}\n"
-        f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
-        f"🕯 4H: touched EMA50 ✅ | closed {close_dir} ({e['ema_dist_4h']:.1f}%)\n"
-        f"📊 Vol: {fmt_vol(e['volume_24h'])} | 1H EMA dist: {e['ema_dist']:.1f}%\n"
-        f"📉 Range: {fmt_price(e['low_24h'])} — {fmt_price(e['high_24h'])}\n"
-        f"<a href='{e['tv_link']}'>📈 TradingView</a>"
+        f"\n<b>{e['ticker']}</b> — {e['mcap']}\n"
+        f"💰 {fmt_price(e['price'])}  ({change_str})\n"
+        f"📦 Vol: {fmt_vol(e['volume_24h'])}\n"
+        f"📊 EMA50: {fmt_price(e['ema'])}  Close: {fmt_price(e['close'])}\n"
+        f"<a href='{e['tv_link']}'>📈 Chart</a>"
     )
 
 
-def build_message(bullish, bearish, now_str):
-    if not bullish and not bearish:
-        return (
-            f"🟣 <b>EMA50 PULLBACK Scan</b>\n"
-            f"▰▰▰▰▰▰▰▰▰▰▰▰\n"
-            f"No 4H touch + close + 1H confirm setups\n\n"
-            f"🕐 {now_str}"
-        )
-
-    lines = ["🟣 <b>EMA50 PULLBACK — Touch + Close + 1H Confirm</b>", "▰▰▰▰▰▰▰▰▰▰▰▰"]
-
-    if bullish:
-        lines.append("\n🟢 <b>Bullish Pullback</b> — 4H touched + closed above, 1H confirms")
-        for e in bullish:
-            lines.append(fmt_coin(e))
-
-    if bearish:
-        lines.append("\n🔴 <b>Bearish Pullback</b> — 4H touched + closed below, 1H confirms")
-        for e in bearish:
-            lines.append(fmt_coin(e))
-
-    lines.append(f"\n🕐 {now_str}")
-    return "\n".join(lines)
+def build_entry(ticker, mcap, td, ema, close):
+    return {
+        "ticker": ticker, "mcap": mcap,
+        "price": td["price"] if td else 0,
+        "change_24h": td["change_24h"] if td else 0,
+        "volume_24h": td["volume_24h"] if td else 0,
+        "ema": ema, "close": close,
+        "tv_link": f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
+    }
 
 
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
+
     coins = get_coins()
+    if not coins:
+        log.error("No coins fetched — aborting.")
+        return
+
     memory = load_memory()
-    bullish, bearish, new_memory = scan_coins(coins, memory)
-    memory.update(new_memory)
+
+    # Signal 1: 1H EMA50 close
+    h1_above = []
+    h1_below = []
+    # Signal 2: 4H EMA50 close
+    close_above  = []
+    close_below  = []
+    close_inside = []
+
+    skipped = 0
+
+    for ticker, mcap in coins:
+        # ── Signal 2: 4H EMA50 CLOSE ─────────────────────
+        candles_4h = get_candles(ticker, "4h")
+        if candles_4h:
+            closes_4h = [c["close"] for c in candles_4h]
+            ema_4h    = calc_ema(closes_4h, EMA_PERIOD)
+            e4        = ema_4h[-1]
+            c4close   = candles_4h[-1]["close"]
+            tol       = e4 * ZONE_TOLERANCE
+
+            if c4close > e4 + tol:
+                close_val = "ABOVE"
+            elif c4close < e4 - tol:
+                close_val = "BELOW"
+            else:
+                close_val = "INSIDE"
+
+            close_key = f"{ticker}_4h_close"
+            if is_new_signal(memory, close_key, close_val):
+                td = get_ticker(ticker)
+                entry = build_entry(ticker, mcap, td, e4, c4close)
+                memory[close_key] = close_val
+                if close_val == "ABOVE":
+                    close_above.append(entry)
+                    log.info(f"{ticker} 4H closed ABOVE EMA50 — NEW")
+                elif close_val == "BELOW":
+                    close_below.append(entry)
+                    log.info(f"{ticker} 4H closed BELOW EMA50 — NEW")
+                else:
+                    close_inside.append(entry)
+                    log.info(f"{ticker} 4H closed INSIDE EMA50 — NEW")
+                time.sleep(0.1)
+        else:
+            skipped += 1
+
+        # ── Signal 1: 1H EMA50 CLOSE ─────────────────────
+        candles_1h = get_candles(ticker, "1h")
+        if candles_1h:
+            closes_1h = [c["close"] for c in candles_1h]
+            ema_1h    = calc_ema(closes_1h, EMA_PERIOD)
+            e1        = ema_1h[-1]
+            c1close   = candles_1h[-1]["close"]
+
+            h1_dir = "ABOVE" if c1close > e1 else "BELOW"
+            h1_key = f"{ticker}_1h_close"
+
+            if is_new_signal(memory, h1_key, h1_dir):
+                td = get_ticker(ticker)
+                entry = build_entry(ticker, mcap, td, e1, c1close)
+                memory[h1_key] = h1_dir
+                if h1_dir == "ABOVE":
+                    h1_above.append(entry)
+                    log.info(f"{ticker} 1H closed ABOVE EMA50 — NEW")
+                else:
+                    h1_below.append(entry)
+                    log.info(f"{ticker} 1H closed BELOW EMA50 — NEW")
+                time.sleep(0.1)
+        else:
+            skipped += 1
+
+        time.sleep(0.2)
+
     save_memory(memory)
-    msg = build_message(bullish, bearish, now_str)
-    send_alert(msg)
+    log.info(f"{skipped} coins skipped — no Coinbase data")
+
+    # ── Send Signal 1: 1H EMA50 CLOSE ───────────────────
+    if h1_above or h1_below:
+        lines = [
+            "⚡ <b>1H EMA50 CLOSE SIGNAL</b>",
+            "╔════════════════════╗",
+            f"🕐 {now_str}",
+            "╚════════════════════╝",
+        ]
+        if h1_above:
+            lines.append(f"\n🟢 <b>CLOSED ABOVE EMA50</b> — {len(h1_above)} coins")
+            for e in h1_above:
+                lines.append(fmt_entry(e))
+        if h1_below:
+            lines.append(f"\n🔴 <b>CLOSED BELOW EMA50</b> — {len(h1_below)} coins")
+            for e in h1_below:
+                lines.append(fmt_entry(e))
+        send_alert("\n".join(lines))
+
+    # ── Send Signal 2: 4H EMA50 CLOSE ───────────────────
+    if close_above or close_below or close_inside:
+        lines = [
+            "🕯 <b>4H EMA50 CLOSE SIGNAL</b>",
+            "══════════════════════",
+            f"🕐 {now_str}",
+            "══════════════════════",
+        ]
+        if close_above:
+            lines.append(f"\n💚 <b>CLOSED ABOVE EMA50</b> — {len(close_above)} coins")
+            for e in close_above:
+                lines.append(fmt_entry(e))
+        if close_below:
+            lines.append(f"\n❤️ <b>CLOSED BELOW EMA50</b> — {len(close_below)} coins")
+            for e in close_below:
+                lines.append(fmt_entry(e))
+        if close_inside:
+            lines.append(f"\n🔵 <b>CLOSED INSIDE EMA50 ZONE</b> — {len(close_inside)} coins")
+            for e in close_inside:
+                lines.append(fmt_entry(e))
+        send_alert("\n".join(lines))
+
+    total = len(h1_above) + len(h1_below) + len(close_above) + len(close_below) + len(close_inside)
+    if total == 0:
+        log.info("No new EMA50 signals found.")
     log.info("Scan complete.")
 
 
@@ -303,8 +302,13 @@ def wait_until_next_scan():
 
 
 if __name__ == "__main__":
-    log.info("EMA50 PULLBACK Scanner started.")
-    send_alert("🟣 <b>EMA50 PULLBACK Scanner Online</b>\nScanning 4H touch + 4H close + 1H confirmation every hour at :15.")
+    log.info("EMA50 Scanner started.")
+    send_alert(
+        "🟣 <b>EMA50 Scanner Online</b>\n"
+        "2 independent signals every hour at :15\n\n"
+        "⚡ 1H EMA50 Close (above / below)\n"
+        "🕯 4H EMA50 Close (above / below / inside)"
+    )
     run_scan()
     while True:
         wait_until_next_scan()
