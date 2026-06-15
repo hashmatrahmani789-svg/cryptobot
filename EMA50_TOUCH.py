@@ -8,7 +8,7 @@ from coins import get_coins
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [EMA50-TOUCH] %(message)s",
+    format="%(asctime)s [EMA50-PULLBACK] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger(__name__)
@@ -119,6 +119,16 @@ def check_4h_touch(candles_4h, ema_4h):
     return c["low"] <= e + tol and c["high"] >= e - tol
 
 
+def check_4h_close(candles_4h, ema_4h):
+    c = candles_4h[-1]
+    e = ema_4h[-1]
+    if c["close"] > e:
+        return "BULLISH"
+    if c["close"] < e:
+        return "BEARISH"
+    return None
+
+
 def check_1h_confirmation(candles_1h, ema_1h):
     c = candles_1h[-1]
     e = ema_1h[-1]
@@ -170,14 +180,27 @@ def scan_coins(coins, memory):
         ema_4h = calc_ema(closes_4h, EMA_PERIOD)
         ema_1h = calc_ema(closes_1h, EMA_PERIOD)
 
+        # 1) 4H must touch the EMA 50 zone
         if not check_4h_touch(candles_4h, ema_4h):
             continue
 
-        direction = check_1h_confirmation(candles_1h, ema_1h)
-        if direction is None:
+        # 2) 4H must CLOSE in a direction relative to EMA 50
+        dir_4h = check_4h_close(candles_4h, ema_4h)
+        if dir_4h is None:
             continue
 
-        key = f"{ticker}_ema50"
+        # 3) 1H must confirm the SAME direction
+        dir_1h = check_1h_confirmation(candles_1h, ema_1h)
+        if dir_1h is None:
+            continue
+
+        # 4) both timeframes must agree
+        if dir_4h != dir_1h:
+            log.info(f"{ticker} EMA50 — 4H/1H mismatch ({dir_4h}/{dir_1h}), skipping")
+            continue
+
+        direction = dir_4h
+        key = f"{ticker}_ema50_pullback"
 
         if not is_new_signal(memory, key, direction):
             log.info(f"{ticker} EMA50 {direction} — already fired, skipping")
@@ -185,14 +208,17 @@ def scan_coins(coins, memory):
             continue
 
         ticker_data = get_ticker(ticker)
-        ema_dist = abs(closes_1h[-1] - ema_1h[-1]) / ema_1h[-1] * 100
+        ema_dist     = abs(closes_1h[-1] - ema_1h[-1]) / ema_1h[-1] * 100
+        ema_dist_4h  = abs(closes_4h[-1] - ema_4h[-1]) / ema_4h[-1] * 100
 
-        log.info(f"{ticker} EMA50 touch — {direction} — NEW signal")
+        log.info(f"{ticker} EMA50 touch + 4H close + 1H confirm — {direction} — NEW signal")
 
         entry = {
-            "ticker":     ticker,
-            "mcap":       mcap,
-            "ema_dist":   ema_dist,
+            "ticker":      ticker,
+            "mcap":        mcap,
+            "direction":   direction,
+            "ema_dist":    ema_dist,
+            "ema_dist_4h": ema_dist_4h,
             "price":      ticker_data["price"]      if ticker_data else 0,
             "change_24h": ticker_data["change_24h"] if ticker_data else 0,
             "volume_24h": ticker_data["volume_24h"] if ticker_data else 0,
@@ -217,10 +243,12 @@ def scan_coins(coins, memory):
 def fmt_coin(e):
     change = e["change_24h"]
     change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
+    close_dir = "above ✅" if e["direction"] == "BULLISH" else "below ✅"
     return (
         f"<b>{e['ticker']}</b> — MCap: {e['mcap']}\n"
         f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
-        f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA dist: {e['ema_dist']:.1f}%\n"
+        f"🕯 4H: touched EMA50 ✅ | closed {close_dir} ({e['ema_dist_4h']:.1f}%)\n"
+        f"📊 Vol: {fmt_vol(e['volume_24h'])} | 1H EMA dist: {e['ema_dist']:.1f}%\n"
         f"📉 Range: {fmt_price(e['low_24h'])} — {fmt_price(e['high_24h'])}\n"
         f"<a href='{e['tv_link']}'>📈 TradingView</a>"
     )
@@ -229,21 +257,21 @@ def fmt_coin(e):
 def build_message(bullish, bearish, now_str):
     if not bullish and not bearish:
         return (
-            f"🔍 <b>EMA 50 Scan</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"No new 4H touches confirmed on 1H\n\n"
+            f"🟣 <b>EMA50 PULLBACK Scan</b>\n"
+            f"▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            f"No 4H touch + close + 1H confirm setups\n\n"
             f"🕐 {now_str}"
         )
 
-    lines = ["🎯 <b>EMA 50 — Touch Alert</b>", "━━━━━━━━━━━━━━━━"]
+    lines = ["🟣 <b>EMA50 PULLBACK — Touch + Close + 1H Confirm</b>", "▰▰▰▰▰▰▰▰▰▰▰▰"]
 
     if bullish:
-        lines.append("\n📈 <b>Bullish</b> — 4H touched + 1H closed above")
+        lines.append("\n🟢 <b>Bullish Pullback</b> — 4H touched + closed above, 1H confirms")
         for e in bullish:
             lines.append(fmt_coin(e))
 
     if bearish:
-        lines.append("\n📉 <b>Bearish</b> — 4H touched + 1H closed below")
+        lines.append("\n🔴 <b>Bearish Pullback</b> — 4H touched + closed below, 1H confirms")
         for e in bearish:
             lines.append(fmt_coin(e))
 
@@ -275,8 +303,8 @@ def wait_until_next_scan():
 
 
 if __name__ == "__main__":
-    log.info("EMA 50 Touch Scanner started.")
-    send_alert("✅ <b>EMA 50 Scanner Online</b>\nScanning 4H touch + 1H confirmation every hour at :15.")
+    log.info("EMA50 PULLBACK Scanner started.")
+    send_alert("🟣 <b>EMA50 PULLBACK Scanner Online</b>\nScanning 4H touch + 4H close + 1H confirmation every hour at :15.")
     run_scan()
     while True:
         wait_until_next_scan()
