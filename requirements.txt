@@ -1,3 +1,4 @@
 requests
 ccxt
 python-telegram-bot
+numpy
