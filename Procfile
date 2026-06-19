@@ -1,1 +1,1 @@
-worker: python daily_ema_cross.py
+worker: python daily_ema_cross.py & python volume_spike.py & python calendar_bot.py & python liquidation_bot.py & python oi_spike_bot.py & wait
