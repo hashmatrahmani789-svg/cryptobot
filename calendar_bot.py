@@ -1,8 +1,25 @@
+"""
+Economic Calendar Bot
+=====================
+Monitors high-impact macro events and sends Telegram alerts:
+  • Day before   — full explainer
+  • 1 hour before
+  • 15 min before
+
+All alert times displayed in Pacific Time (Seattle, WA).
+Handles PST (UTC-8) and PDT (UTC-7) automatically via zoneinfo.
+
+Env vars required:
+  TELEGRAM_TOKEN
+  TELEGRAM_CHAT_ID
+"""
+
 import os
 import time
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,7 +31,17 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-# ── Event types: name, one-line impact, full plain-english explainer ──────────
+PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
+def fmt_local(dt_utc):
+    """Convert a UTC datetime to Pacific Time and return a readable string."""
+    dt_pt  = dt_utc.astimezone(PACIFIC)
+    tz_abbr = dt_pt.strftime("%Z")   # PDT or PST automatically
+    return dt_pt.strftime(f"%a %b %d, %I:%M %p {tz_abbr}")
+
+
+# ── Event types ───────────────────────────────────────────────────────────────
 EVENT_TYPES = {
     "FOMC": {
         "name": "🏦 FOMC Rate Decision",
@@ -184,16 +211,15 @@ EVENT_TYPES = {
     },
 }
 
-# ── Scheduled events for 2026 ─────────────────────────────────────────────────
+# ── Scheduled events for 2026 (all times in UTC) ──────────────────────────────
 # Format: (month, day, hour_utc, minute_utc, type_key)
-# NOTE: Dates are estimates — verify big releases against a live economic calendar.
 EVENTS_2026 = [
     # FOMC Rate Decisions
     (1, 29, 19, 0, "FOMC"), (3, 19, 18, 0, "FOMC"), (5, 7, 18, 0, "FOMC"),
     (6, 18, 18, 0, "FOMC"), (7, 30, 18, 0, "FOMC"), (9, 17, 18, 0, "FOMC"),
     (11, 5, 19, 0, "FOMC"), (12, 17, 19, 0, "FOMC"),
 
-    # FOMC Minutes (~3 weeks after each meeting)
+    # FOMC Minutes
     (2, 18, 19, 0, "FOMC_MINUTES"), (4, 8, 18, 0, "FOMC_MINUTES"),
     (5, 28, 18, 0, "FOMC_MINUTES"), (7, 8, 18, 0, "FOMC_MINUTES"),
     (8, 19, 18, 0, "FOMC_MINUTES"), (10, 7, 18, 0, "FOMC_MINUTES"),
@@ -205,7 +231,7 @@ EVENTS_2026 = [
     (7, 15, 12, 30, "CPI"), (8, 12, 12, 30, "CPI"), (9, 11, 12, 30, "CPI"),
     (10, 14, 12, 30, "CPI"), (11, 12, 13, 30, "CPI"), (12, 10, 13, 30, "CPI"),
 
-    # Core PCE (~last week of month)
+    # Core PCE
     (1, 30, 13, 30, "CORE_PCE"), (2, 27, 13, 30, "CORE_PCE"), (3, 27, 12, 30, "CORE_PCE"),
     (4, 30, 12, 30, "CORE_PCE"), (5, 29, 12, 30, "CORE_PCE"), (6, 26, 12, 30, "CORE_PCE"),
     (7, 31, 12, 30, "CORE_PCE"), (8, 28, 12, 30, "CORE_PCE"), (9, 25, 12, 30, "CORE_PCE"),
@@ -223,7 +249,7 @@ EVENTS_2026 = [
     (7, 3, 12, 30, "NFP"), (8, 7, 12, 30, "NFP"), (9, 5, 12, 30, "NFP"),
     (10, 3, 12, 30, "NFP"), (11, 6, 13, 30, "NFP"), (12, 4, 13, 30, "NFP"),
 
-    # Retail Sales (~mid month)
+    # Retail Sales
     (1, 16, 13, 30, "RETAIL"), (2, 17, 13, 30, "RETAIL"), (3, 16, 12, 30, "RETAIL"),
     (4, 15, 12, 30, "RETAIL"), (5, 15, 12, 30, "RETAIL"), (6, 16, 12, 30, "RETAIL"),
     (7, 16, 12, 30, "RETAIL"), (8, 14, 12, 30, "RETAIL"), (9, 16, 12, 30, "RETAIL"),
@@ -233,19 +259,19 @@ EVENTS_2026 = [
     (1, 29, 13, 30, "GDP"), (4, 29, 12, 30, "GDP"),
     (7, 30, 12, 30, "GDP"), (10, 29, 12, 30, "GDP"),
 
-    # ISM Manufacturing (first business day)
+    # ISM Manufacturing
     (1, 2, 15, 0, "ISM_MFG"), (2, 2, 15, 0, "ISM_MFG"), (3, 2, 15, 0, "ISM_MFG"),
     (4, 1, 14, 0, "ISM_MFG"), (5, 1, 14, 0, "ISM_MFG"), (6, 1, 14, 0, "ISM_MFG"),
     (7, 1, 14, 0, "ISM_MFG"), (8, 3, 14, 0, "ISM_MFG"), (9, 1, 14, 0, "ISM_MFG"),
     (10, 1, 14, 0, "ISM_MFG"), (11, 2, 15, 0, "ISM_MFG"), (12, 1, 15, 0, "ISM_MFG"),
 
-    # ISM Services (~3rd business day)
+    # ISM Services
     (1, 6, 15, 0, "ISM_SVC"), (2, 4, 15, 0, "ISM_SVC"), (3, 4, 15, 0, "ISM_SVC"),
     (4, 3, 14, 0, "ISM_SVC"), (5, 5, 14, 0, "ISM_SVC"), (6, 3, 14, 0, "ISM_SVC"),
     (7, 6, 14, 0, "ISM_SVC"), (8, 5, 14, 0, "ISM_SVC"), (9, 3, 14, 0, "ISM_SVC"),
     (10, 5, 14, 0, "ISM_SVC"), (11, 4, 15, 0, "ISM_SVC"), (12, 3, 15, 0, "ISM_SVC"),
 
-    # Consumer Confidence (~last Tuesday)
+    # Consumer Confidence
     (1, 27, 15, 0, "CONSUMER_CONF"), (2, 24, 15, 0, "CONSUMER_CONF"),
     (3, 31, 14, 0, "CONSUMER_CONF"), (4, 28, 14, 0, "CONSUMER_CONF"),
     (5, 26, 14, 0, "CONSUMER_CONF"), (6, 30, 14, 0, "CONSUMER_CONF"),
@@ -269,12 +295,12 @@ def send_alert(message):
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
+                "chat_id":                  TELEGRAM_CHAT_ID,
+                "text":                     message,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": True,
             },
-            timeout=15
+            timeout=15,
         )
         if r.status_code == 200:
             log.info("Telegram alert sent.")
@@ -284,7 +310,7 @@ def send_alert(message):
         log.error(f"Telegram exception: {e}")
 
 
-def get_upcoming_events(now, hours_ahead=25):
+def get_upcoming_events(now, hours_ahead=26):
     upcoming = []
     for month, day, hour, minute, type_key in EVENTS_2026:
         try:
@@ -298,66 +324,66 @@ def get_upcoming_events(now, hours_ahead=25):
 
 
 def check_and_alert(sent_log):
-    now = datetime.now(timezone.utc)
-    events = get_upcoming_events(now, hours_ahead=25)
+    now    = datetime.now(timezone.utc)
+    events = get_upcoming_events(now, hours_ahead=26)
 
     for event_time, hours_away, type_key in events:
-        et       = EVENT_TYPES[type_key]
-        name     = et["name"]
-        impact   = et["impact"]
-        explain  = et["explain"]
-        time_str = event_time.strftime("%Y-%m-%d %H:%M UTC")
+        et      = EVENT_TYPES[type_key]
+        name    = et["name"]
+        impact  = et["impact"]
+        explain = et["explain"]
+        local   = fmt_local(event_time)        # ← Pacific Time display
 
         # Day-before alert (includes full explainer)
-        day_key = f"day_{time_str}_{type_key}"
+        day_key = f"day_{event_time.isoformat()}_{type_key}"
         if 18 <= hours_away <= 26 and day_key not in sent_log:
             msg = (
                 f"📅 <b>TOMORROW — Economic Event</b>\n"
                 f"━━━━━━━━━━━━━━━━\n"
                 f"{name}\n"
-                f"🕐 {time_str}\n\n"
+                f"🕐 {local}\n\n"
                 f"ℹ️ {impact}\n\n"
                 f"{explain}\n\n"
                 f"⚠️ <b>Consider reducing risk or waiting for the release before new trades.</b>"
             )
             send_alert(msg)
             sent_log.add(day_key)
-            log.info(f"Day-before alert sent: {name}")
+            log.info(f"Day-before alert sent: {name} @ {local}")
 
         # 1 hour before
-        hour_key = f"1h_{time_str}_{type_key}"
+        hour_key = f"1h_{event_time.isoformat()}_{type_key}"
         if 0.5 <= hours_away <= 1.5 and hour_key not in sent_log:
             msg = (
                 f"⚠️ <b>1 HOUR WARNING</b>\n"
                 f"━━━━━━━━━━━━━━━━\n"
                 f"{name}\n"
-                f"🕐 {time_str}\n\n"
+                f"🕐 {local}\n\n"
                 f"ℹ️ {impact}\n\n"
                 f"🚨 <b>High volatility expected. Avoid new entries until after release.</b>"
             )
             send_alert(msg)
             sent_log.add(hour_key)
-            log.info(f"1h alert sent: {name}")
+            log.info(f"1h alert sent: {name} @ {local}")
 
         # 15 min before
-        min_key = f"15m_{time_str}_{type_key}"
+        min_key = f"15m_{event_time.isoformat()}_{type_key}"
         if 0 <= hours_away <= 0.35 and min_key not in sent_log:
             msg = (
                 f"🚨 <b>15 MINUTES — EVENT IMMINENT</b>\n"
                 f"━━━━━━━━━━━━━━━━\n"
                 f"{name}\n"
-                f"🕐 {time_str}\n\n"
+                f"🕐 {local}\n\n"
                 f"⛔ <b>DO NOT enter new trades. Close risky positions if needed.</b>"
             )
             send_alert(msg)
             sent_log.add(min_key)
-            log.info(f"15min alert sent: {name}")
+            log.info(f"15min alert sent: {name} @ {local}")
 
     return sent_log
 
 
 def send_weekly_preview():
-    now = datetime.now(timezone.utc)
+    now      = datetime.now(timezone.utc)
     upcoming = []
     for month, day, hour, minute, type_key in EVENTS_2026:
         try:
@@ -372,11 +398,11 @@ def send_weekly_preview():
         return
 
     lines = [
-        "📅 <b>THIS WEEK — Economic Events</b>",
+        "📅 <b>THIS WEEK — Economic Events (Pacific Time)</b>",
         "━━━━━━━━━━━━━━━━",
     ]
     for event_time, name in sorted(upcoming):
-        lines.append(f"• {name} — {event_time.strftime('%a %b %d, %H:%M UTC')}")
+        lines.append(f"• {name} — {fmt_local(event_time)}")
 
     lines.append("\n⚠️ <i>Plan your trades around these dates.</i>")
     send_alert("\n".join(lines))
@@ -385,15 +411,22 @@ def send_weekly_preview():
 
 if __name__ == "__main__":
     log.info("Economic Calendar Bot started.")
+
+    # Show current Pacific offset on startup
+    now_pt   = datetime.now(PACIFIC)
+    tz_abbr  = now_pt.strftime("%Z")
+    utc_off  = now_pt.strftime("%z")
+    utc_disp = f"UTC{utc_off[:3]}:{utc_off[3:]}"
+
     send_alert(
-        "✅ <b>Economic Calendar Bot Online</b>\n"
-        "Monitoring all high-impact 2026 events.\n"
-        "Alerts: Day before (with full explainer) + 1 hour + 15 min.\n\n"
-        "Tracking: FOMC, CPI, Core PCE, PPI, NFP, Unemployment, Retail Sales, "
-        "GDP, ISM PMIs, Consumer Confidence, Jackson Hole & more."
+        f"✅ <b>Economic Calendar Bot Online</b>\n"
+        f"📍 All times shown in Pacific Time ({tz_abbr} / {utc_disp})\n"
+        f"Alerts: Day before (with full explainer) + 1 hour + 15 min.\n\n"
+        f"Tracking: FOMC, CPI, Core PCE, PPI, NFP, Unemployment, Retail Sales, "
+        f"GDP, ISM PMIs, Consumer Confidence, Jackson Hole & more."
     )
 
-    sent_log = set()
+    sent_log         = set()
     weekly_sent_date = None
 
     now = datetime.now(timezone.utc)

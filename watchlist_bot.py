@@ -20,11 +20,9 @@ EMA_FAST          = 12
 EMA_SLOW          = 21
 EMA_50            = 50
 VOLUME_MA_PERIOD  = 20
-CROSS_LOOKBACK    = 3          # how many recent candles to check for a fresh cross
-ZONE_TOLERANCE    = 0.003      # 0.3% band around EMA50 = "inside"
+CROSS_LOOKBACK    = 3
+ZONE_TOLERANCE    = 0.003
 
-# ── Watchlist ────────────────────────────────────────────────────────────────
-# Crypto pulls from Coinbase. Macro pulls from Twelve Data.
 CRYPTO = [
     ("BTC",  "Bitcoin"),
     ("ETH",  "Ethereum"),
@@ -32,7 +30,6 @@ CRYPTO = [
     ("SOL",  "Solana"),
 ]
 
-# (twelve_data_symbol, display_name)
 MACRO = [
     ("XAU/USD", "Gold"),
     ("XAG/USD", "Silver"),
@@ -41,14 +38,12 @@ MACRO = [
     ("DXY",     "Dollar Index"),
 ]
 
-# Timeframes per asset class
 CRYPTO_TFS = ["15m", "1h", "4h"]
 MACRO_TFS  = ["1h", "4h", "1day"]
 
 SIGNAL_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_memory_watchlist.json")
 
 
-# ── Memory ────────────────────────────────────────────────────────────────────
 def load_memory():
     if os.path.exists(SIGNAL_MEMORY_FILE):
         try:
@@ -71,7 +66,6 @@ def is_new_signal(memory, key, value):
     return memory.get(key) != value
 
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
 def send_alert(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log.error("Telegram credentials missing.")
@@ -95,7 +89,6 @@ def send_alert(message):
         log.error(f"Telegram exception: {e}")
 
 
-# ── Data: Coinbase (crypto) ─────────────────────────────────────────────────────
 def get_crypto_candles(ticker, interval):
     granularity_map = {"15m": "FIFTEEN_MINUTE", "1h": "ONE_HOUR", "4h": "FOUR_HOUR"}
     granularity = granularity_map.get(interval)
@@ -110,7 +103,7 @@ def get_crypto_candles(ticker, interval):
         candles = data.get("candles", [])
         if not candles or len(candles) < 60:
             return None
-        candles = list(reversed(candles))[:-1]  # drop the still-forming candle
+        candles = list(reversed(candles))[:-1]
         return [
             {
                 "high":   float(c["high"]),
@@ -125,7 +118,6 @@ def get_crypto_candles(ticker, interval):
         return None
 
 
-# ── Data: Twelve Data (macro) ───────────────────────────────────────────────────
 def get_macro_candles(symbol, interval):
     try:
         r = requests.get(
@@ -145,7 +137,7 @@ def get_macro_candles(symbol, interval):
         values = data.get("values", [])
         if not values or len(values) < 60:
             return None
-        values = list(reversed(values))  # API returns newest-first
+        values = list(reversed(values))
         return [
             {
                 "high":   float(v["high"]),
@@ -160,7 +152,6 @@ def get_macro_candles(symbol, interval):
         return None
 
 
-# ── Indicators ──────────────────────────────────────────────────────────────────
 def calc_ema(values, period):
     k = 2 / (period + 1)
     ema = [values[0]]
@@ -195,7 +186,6 @@ def ema50_state(candles):
     e      = ema50[-1]
     c      = candles[-1]
     tol    = e * ZONE_TOLERANCE
-    # touch = wick entered the band
     touched = c["low"] <= e + tol and c["high"] >= e - tol
     if c["close"] > e + tol:
         state = "ABOVE"
@@ -206,7 +196,6 @@ def ema50_state(candles):
     return touched, state, e, c["close"]
 
 
-# ── Formatting ────────────────────────────────────────────────────────────────
 def fmt_price(p):
     if p is None or p == 0:
         return "N/A"
@@ -221,14 +210,8 @@ def tv_link_crypto(ticker):
     return f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
 
 
-# ── Signal collection ───────────────────────────────────────────────────────────
 def scan_asset(name, label, candles_by_tf, tfs, is_crypto, memory,
                sig1, sig2, sig3):
-    """
-    sig1 = 1H EMA cross + volume
-    sig2 = 4H EMA cross (no volume)
-    sig3 = lowest TF EMA50 touch/close (15m crypto, 1h macro)
-    """
     # ── Signal 1: 1H EMA 12/21 cross WITH volume ─────────────────────────────
     c_1h = candles_by_tf.get("1h")
     if c_1h:
@@ -236,7 +219,7 @@ def scan_asset(name, label, candles_by_tf, tfs, is_crypto, memory,
         vols   = [c["volume"] for c in c_1h]
         direction, ago, ef, es = find_cross(closes)
         if direction:
-            has_vol = volume_above_ma(vols) if is_crypto else True  # macro 1h vol unreliable; allow
+            has_vol = volume_above_ma(vols) if is_crypto else True
             if has_vol:
                 key = f"{name}_1h_cross"
                 if is_new_signal(memory, key, direction):
@@ -246,9 +229,7 @@ def scan_asset(name, label, candles_by_tf, tfs, is_crypto, memory,
                         "ago": ago, "ef": ef, "es": es,
                         "price": closes[-1], "is_crypto": is_crypto,
                     })
-            # reset memory when no longer crossed in same dir handled by state change
-        else:
-            memory.pop(f"{name}_1h_cross", None)
+        # ← memory.pop() removed: signal won't re-fire until direction flips
 
     # ── Signal 2: 4H EMA 12/21 cross WITHOUT volume ──────────────────────────
     c_4h = candles_by_tf.get("4h")
@@ -264,15 +245,13 @@ def scan_asset(name, label, candles_by_tf, tfs, is_crypto, memory,
                     "ago": ago, "ef": ef, "es": es,
                     "price": closes[-1], "is_crypto": is_crypto,
                 })
-        else:
-            memory.pop(f"{name}_4h_cross", None)
+        # ← memory.pop() removed: signal won't re-fire until direction flips
 
-    # ── Signal 3: lowest-TF EMA50 touch + close (inside/outside) ──────────────
-    low_tf = tfs[0]  # 15m for crypto, 1h for macro
+    # ── Signal 3: lowest-TF EMA50 touch + close ──────────────────────────────
+    low_tf = tfs[0]
     c_low = candles_by_tf.get(low_tf)
     if c_low:
         touched, state, ema, close = ema50_state(c_low)
-        # fire on state change (ABOVE/BELOW/INSIDE) — captures close outside & inside
         key = f"{name}_{low_tf}_ema50"
         if is_new_signal(memory, key, state):
             memory[key] = state
@@ -283,7 +262,6 @@ def scan_asset(name, label, candles_by_tf, tfs, is_crypto, memory,
             })
 
 
-# ── Alert builders ──────────────────────────────────────────────────────────────
 def fmt_cross_entry(e):
     arrow = "🟢" if e["dir"] == "BULLISH" else "🔴"
     when  = "this candle" if e["ago"] == 1 else f"{e['ago']} candles ago"
@@ -308,7 +286,6 @@ def fmt_ema50_entry(e):
 
 
 def send_signals(sig1, sig2, sig3, now_str):
-    # Signal 1: 1H cross + vol
     if sig1:
         lines = [
             "⚡ <b>1H EMA 12/21 CROSS + VOLUME</b>",
@@ -320,7 +297,6 @@ def send_signals(sig1, sig2, sig3, now_str):
             lines.append(fmt_cross_entry(e))
         send_alert("\n".join(lines))
 
-    # Signal 2: 4H cross (no vol)
     if sig2:
         lines = [
             "🌊 <b>4H EMA 12/21 CROSS</b>",
@@ -332,7 +308,6 @@ def send_signals(sig1, sig2, sig3, now_str):
             lines.append(fmt_cross_entry(e))
         send_alert("\n".join(lines))
 
-    # Signal 3: EMA50 touch/close
     if sig3:
         lines = [
             "🕯 <b>EMA50 TOUCH + CLOSE</b>",
@@ -345,7 +320,6 @@ def send_signals(sig1, sig2, sig3, now_str):
         send_alert("\n".join(lines))
 
 
-# ── Scan loop ────────────────────────────────────────────────────────────────────
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Watchlist scan running... {now_str}")
@@ -353,7 +327,6 @@ def run_scan():
     memory = load_memory()
     sig1, sig2, sig3 = [], [], []
 
-    # Crypto via Coinbase
     for ticker, label in CRYPTO:
         candles_by_tf = {}
         for tf in CRYPTO_TFS:
@@ -361,15 +334,12 @@ def run_scan():
             time.sleep(0.2)
         scan_asset(ticker, label, candles_by_tf, CRYPTO_TFS, True, memory, sig1, sig2, sig3)
 
-    # Macro via Twelve Data
     if TWELVE_DATA_KEY:
         for symbol, label in MACRO:
             candles_by_tf = {}
             for tf in MACRO_TFS:
                 candles_by_tf[tf] = get_macro_candles(symbol, tf)
-                time.sleep(1.0)  # stay under 8 req/min on free tier
-            # map macro low-tf (1h) into the same slots; macro tfs = 1h/4h/1day
-            # Signal 3 uses tfs[0] = "1h" for macro
+                time.sleep(1.0)
             scan_asset(symbol.replace("/", ""), label, candles_by_tf, MACRO_TFS, False, memory, sig1, sig2, sig3)
     else:
         log.warning("TWELVE_DATA_KEY not set — skipping macro assets.")
@@ -386,7 +356,6 @@ def run_scan():
 
 
 def wait_until_next_scan():
-    # Scan every 15 min at :00/:15/:30/:45 (crypto needs the 15m granularity)
     now = datetime.now(timezone.utc)
     minute = (now.minute // 15 + 1) * 15
     if minute >= 60:

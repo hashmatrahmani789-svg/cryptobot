@@ -2,17 +2,23 @@
 Volume Spike Signal
 ===================
 Scans all 500M+ market cap coins on Coinbase for volume spikes.
-Runs on both 15m and 1h timeframes.
+Runs on the 1h timeframe only (15m removed to reduce noise).
 
 Signal tiers (RVOL-based):
-  !  Normal spike  : RVOL 2–3×
   !! High spike    : RVOL 3–5×
   !!! Extreme spike: RVOL 5×+
+
+  Normal spikes (2–3×) are intentionally suppressed.
+
+Rules (BOTH must fire):
+  • RVOL   ≥ 3.0×
+  • Z-Score ≥ 2.5
 
 Also detects:
   • CVD (buy vs sell volume split per candle)
   • Divergence warning (price up but sellers dominating)
   • Consecutive spike count
+  • 4-hour cooldown per coin to suppress repeat alerts
 
 Env vars required:
   TELEGRAM_TOKEN
@@ -24,7 +30,6 @@ import json
 import time
 import logging
 import requests
-import numpy as np
 from datetime import datetime, timezone, timedelta
 from coins import get_coins
 
@@ -38,28 +43,31 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-VOL_WINDOW     = 20       # Rolling window for avg/std calculation
-RVOL_THRESH    = 2.0      # Minimum RVOL to trigger
-ZSCORE_THRESH  = 2.0      # Minimum Z-Score to trigger
-REQUIRE_BOTH   = False    # True = RVOL AND Z-Score must both fire
+# ── Thresholds (tightened) ─────────────────────────────────────────────────────
+VOL_WINDOW     = 50       # Wider baseline → more stable average
+RVOL_THRESH    = 3.0      # Raised from 2.0 — skips NORMAL tier entirely
+ZSCORE_THRESH  = 2.5      # Raised from 2.0
+REQUIRE_BOTH   = True     # BOTH RVOL and Z-Score must fire (was False)
+COOLDOWN_HOURS = 4        # Suppress repeat alerts per coin per timeframe
+
+# ── Timeframes (1h only) ───────────────────────────────────────────────────────
+INTERVALS = ["1h"]
+
+GRANULARITY_MAP = {
+    "1h": "ONE_HOUR",
+}
+
+LOOKBACK_LIMIT = {
+    "1h": 150,   # Extra candles so VOL_WINDOW=50 has a solid history
+}
 
 SIGNAL_MEMORY_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "signal_memory_vol_spike.json"
 )
 
-GRANULARITY_MAP = {
-    "15m": "FIFTEEN_MINUTE",
-    "1h":  "ONE_HOUR",
-}
-
-LOOKBACK_LIMIT = {
-    "15m": 100,
-    "1h":  100,
-}
-
 
 # ─────────────────────────────────────────
-# SIGNAL MEMORY
+# SIGNAL MEMORY  (with timestamp cooldown)
 # ─────────────────────────────────────────
 
 def load_memory():
@@ -81,7 +89,36 @@ def save_memory(memory):
 
 
 def is_new_signal(memory, key, value):
-    return memory.get(key) != value
+    """
+    Returns True only if:
+      1. The stored tier/direction changed, OR
+      2. The cooldown window has elapsed since the last alert.
+    """
+    entry = memory.get(key)
+    if entry is None:
+        return True
+
+    # Support old flat-string format gracefully
+    if isinstance(entry, str):
+        return entry != value
+
+    last_val  = entry.get("value")
+    last_ts   = entry.get("ts", 0)
+    now_ts    = datetime.now(timezone.utc).timestamp()
+    elapsed_h = (now_ts - last_ts) / 3600
+
+    if last_val != value:
+        return True                         # Signal changed — always fire
+    if elapsed_h >= COOLDOWN_HOURS:
+        return True                         # Cooldown expired — fire again
+    return False
+
+
+def update_memory(memory, key, value):
+    memory[key] = {
+        "value": value,
+        "ts":    datetime.now(timezone.utc).timestamp(),
+    }
 
 
 # ─────────────────────────────────────────
@@ -96,12 +133,12 @@ def send_alert(message):
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
+                "chat_id":                  TELEGRAM_CHAT_ID,
+                "text":                     message,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": True,
             },
-            timeout=15
+            timeout=15,
         )
         if r.status_code == 200:
             log.info("Telegram alert sent.")
@@ -112,19 +149,19 @@ def send_alert(message):
 
 
 # ─────────────────────────────────────────
-# COINBASE CANDLES (with volume)
+# COINBASE CANDLES
 # ─────────────────────────────────────────
 
 def get_candles(ticker, interval):
     """Fetch OHLCV candles from Coinbase. Returns list of dicts or None."""
-    granularity = GRANULARITY_MAP.get(interval)
-    limit       = LOOKBACK_LIMIT.get(interval, 100)
+    granularity = GRANULARITY_MAP[interval]
+    limit       = LOOKBACK_LIMIT[interval]
     product_id  = f"{ticker}-USD"
     try:
         r = requests.get(
             f"https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles",
             params={"granularity": granularity, "limit": limit},
-            timeout=10
+            timeout=10,
         )
         data    = r.json()
         candles = data.get("candles", [])
@@ -152,11 +189,9 @@ def get_candles(ticker, interval):
 # ─────────────────────────────────────────
 
 def calc_rvol_zscore(candles):
-    """
-    Returns (rvol, zscore) for the last candle against a rolling window.
-    """
+    """Returns (rvol, zscore, avg_vol) vs last N candles."""
     volumes = [c["volume"] for c in candles]
-    window  = volumes[-VOL_WINDOW - 1:-1]   # last N candles excluding current
+    window  = volumes[-VOL_WINDOW - 1:-1]
     current = volumes[-1]
 
     avg = sum(window) / len(window)
@@ -170,23 +205,20 @@ def calc_rvol_zscore(candles):
 def calc_cvd(candle):
     """
     Estimate buy vs sell volume using candle body position.
-    buy_vol  = volume × (close - low) / (high - low)
-    sell_vol = volume - buy_vol
+      buy_vol  = volume × (close - low) / (high - low)
+      sell_vol = volume − buy_vol
     """
-    high   = candle["high"]
-    low    = candle["low"]
-    close  = candle["close"]
-    volume = candle["volume"]
-    rng    = high - low
-
+    high, low, close, volume = (
+        candle["high"], candle["low"], candle["close"], candle["volume"]
+    )
+    rng = high - low
     if rng == 0:
-        buy_vol  = volume * 0.5
-        sell_vol = volume * 0.5
+        buy_vol = sell_vol = volume * 0.5
     else:
         buy_vol  = volume * ((close - low) / rng)
         sell_vol = volume - buy_vol
 
-    buy_pct  = round(buy_vol / volume * 100, 1) if volume > 0 else 50.0
+    buy_pct  = round(buy_vol  / volume * 100, 1) if volume > 0 else 50.0
     sell_pct = round(100 - buy_pct, 1)
     delta    = int(buy_vol - sell_vol)
     return buy_pct, sell_pct, delta
@@ -197,9 +229,7 @@ def get_tier(rvol):
         return "EXTREME"
     elif rvol >= 3.0:
         return "HIGH"
-    elif rvol >= 2.0:
-        return "NORMAL"
-    return "NONE"
+    return "NONE"   # NORMAL (2–3×) is intentionally excluded
 
 
 def get_close_position(candle):
@@ -210,9 +240,8 @@ def get_close_position(candle):
 
 
 def is_spike(rvol, zscore):
-    rvol_hit   = rvol   >= RVOL_THRESH
-    zscore_hit = zscore >= ZSCORE_THRESH
-    return (rvol_hit and zscore_hit) if REQUIRE_BOTH else (rvol_hit or zscore_hit)
+    """Both RVOL and Z-Score must exceed their thresholds."""
+    return rvol >= RVOL_THRESH and zscore >= ZSCORE_THRESH
 
 
 # ─────────────────────────────────────────
@@ -220,30 +249,25 @@ def is_spike(rvol, zscore):
 # ─────────────────────────────────────────
 
 def fmt_price(p):
-    if not p or p == 0:
+    if not p:
         return "N/A"
-    if p >= 1000:
-        return f"${p:,.2f}"
-    if p >= 1:
-        return f"${p:.4f}"
+    if p >= 1000:  return f"${p:,.2f}"
+    if p >= 1:     return f"${p:.4f}"
     return f"${p:.6f}"
 
 
 def fmt_vol(v):
-    if v >= 1_000_000_000:
-        return f"${v/1_000_000_000:.2f}B"
-    if v >= 1_000_000:
-        return f"${v/1_000_000:.1f}M"
-    if v >= 1_000:
-        return f"${v/1_000:.1f}K"
+    if v >= 1_000_000_000: return f"${v/1_000_000_000:.2f}B"
+    if v >= 1_000_000:     return f"${v/1_000_000:.1f}M"
+    if v >= 1_000:         return f"${v/1_000:.1f}K"
     return f"{v:.2f}"
 
 
-def fmt_entry(e, interval):
-    tier_emoji = {"EXTREME": "🔥", "HIGH": "⚡", "NORMAL": "📊"}.get(e["tier"], "📊")
+def fmt_entry(e):
+    tier_emoji      = {"EXTREME": "🔥", "HIGH": "⚡"}.get(e["tier"], "⚡")
     direction_emoji = "🟢" if e["direction"] == "BUY" else "🔴"
-    div_line = "\n⚠️ <b>DIVERGENCE</b>: Price up but sellers dominating" if e["divergence"] else ""
-    consec_line = f"\n🔁 <b>{e['consecutive']} consecutive spikes</b>" if e["consecutive"] >= 2 else ""
+    div_line        = "\n⚠️ <b>DIVERGENCE</b>: Price up but sellers dominating" if e["divergence"] else ""
+    consec_line     = f"\n🔁 <b>{e['consecutive']} consecutive spikes</b>" if e["consecutive"] >= 2 else ""
 
     return (
         f"\n<b>{e['ticker']}</b> — {e['mcap']}\n"
@@ -262,48 +286,45 @@ def fmt_entry(e, interval):
 # SCAN
 # ─────────────────────────────────────────
 
-def run_scan(intervals=None):
-    if intervals is None:
-        intervals = ["15m", "1h"]
-
+def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
 
-    coins  = get_coins()
+    coins = get_coins()
     if not coins:
         log.error("No coins fetched — aborting.")
         return
 
     memory  = load_memory()
-    results = {interval: {"EXTREME": [], "HIGH": [], "NORMAL": []} for interval in intervals}
+    results = {interval: {"EXTREME": [], "HIGH": []} for interval in INTERVALS}
     skipped = 0
 
     for ticker, mcap in coins:
-        for interval in intervals:
+        for interval in INTERVALS:
             candles = get_candles(ticker, interval)
             if not candles:
                 skipped += 1
                 continue
 
             rvol, zscore, avg_vol = calc_rvol_zscore(candles)
+
             if not is_spike(rvol, zscore):
                 continue
 
             tier = get_tier(rvol)
             if tier == "NONE":
-                continue
+                continue  # NORMAL tier suppressed
 
-            last = candles[-1]
+            last       = candles[-1]
             buy_pct, sell_pct, delta = calc_cvd(last)
             close_pos  = get_close_position(last)
             direction  = "BUY" if last["close"] >= last["open"] else "SELL"
             divergence = direction == "BUY" and sell_pct > 60
 
-            # Count consecutive spikes
+            # Count consecutive candles above RVOL threshold
             consecutive = 0
             for c in reversed(candles):
-                v = c["volume"]
-                if v > avg_vol * RVOL_THRESH:
+                if c["volume"] > avg_vol * RVOL_THRESH:
                     consecutive += 1
                 else:
                     break
@@ -312,9 +333,10 @@ def run_scan(intervals=None):
             sig_val = f"{tier}_{direction}"
 
             if not is_new_signal(memory, sig_key, sig_val):
+                log.debug(f"{ticker} [{interval}] suppressed (cooldown or same signal)")
                 continue
 
-            memory[sig_key] = sig_val
+            update_memory(memory, sig_key, sig_val)
 
             entry = {
                 "ticker":      ticker,
@@ -342,15 +364,15 @@ def run_scan(intervals=None):
     save_memory(memory)
     log.info(f"{skipped} candle fetches skipped")
 
-    # ── Send alerts per timeframe ─────────────────────────
-    for interval in intervals:
+    # ── Send alerts per timeframe ──────────────────────────────────────────────
+    for interval in INTERVALS:
         tiers = results[interval]
         total = sum(len(v) for v in tiers.values())
         if total == 0:
             log.info(f"No new volume spikes on {interval}.")
             continue
 
-        tf_label = {"15m": "15-Minute", "1h": "1-Hour"}.get(interval, interval)
+        tf_label = {"1h": "1-Hour"}.get(interval, interval)
         lines = [
             f"🔊 <b>VOLUME SPIKE SIGNAL — {tf_label}</b>",
             "╔════════════════════╗",
@@ -361,17 +383,12 @@ def run_scan(intervals=None):
         if tiers["EXTREME"]:
             lines.append(f"\n🔥 <b>EXTREME SPIKES (5×+)</b> — {len(tiers['EXTREME'])} coins")
             for e in tiers["EXTREME"]:
-                lines.append(fmt_entry(e, interval))
+                lines.append(fmt_entry(e))
 
         if tiers["HIGH"]:
             lines.append(f"\n⚡ <b>HIGH SPIKES (3–5×)</b> — {len(tiers['HIGH'])} coins")
             for e in tiers["HIGH"]:
-                lines.append(fmt_entry(e, interval))
-
-        if tiers["NORMAL"]:
-            lines.append(f"\n📊 <b>NORMAL SPIKES (2–3×)</b> — {len(tiers['NORMAL'])} coins")
-            for e in tiers["NORMAL"]:
-                lines.append(fmt_entry(e, interval))
+                lines.append(fmt_entry(e))
 
         send_alert("\n".join(lines))
 
@@ -379,37 +396,22 @@ def run_scan(intervals=None):
 
 
 # ─────────────────────────────────────────
-# TIMING — synced to candle close
+# TIMING — synced to 1h candle close
 # ─────────────────────────────────────────
 
 def wait_until_next_scan():
     """
-    15m candles close at :00, :15, :30, :45
-    1h  candles close at :00
-    Scan fires 1 minute after close to ensure candle is confirmed.
-    Returns which intervals to scan.
+    1h candles close at :00 each hour.
+    Scan fires at :01 to ensure the candle is confirmed.
     """
     now      = datetime.now(timezone.utc)
-    minute   = now.minute
-    # Next :01, :16, :31, :46
-    targets  = [1, 16, 31, 46]
-    upcoming = [t for t in targets if t > minute]
-    next_min = upcoming[0] if upcoming else targets[0]
-
-    next_run = now.replace(second=0, microsecond=0)
-    if next_min <= minute:
+    next_run = now.replace(minute=1, second=0, microsecond=0)
+    if now.minute >= 1:
         next_run += timedelta(hours=1)
-    next_run = next_run.replace(minute=next_min)
 
     sleep_secs = (next_run - now).total_seconds()
     log.info(f"Next scan at {next_run.strftime('%H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
     time.sleep(max(sleep_secs, 1))
-
-    # At :01 — scan 1h too; otherwise just 15m
-    fired_minute = next_run.minute
-    if fired_minute == 1:
-        return ["15m", "1h"]
-    return ["15m"]
 
 
 # ─────────────────────────────────────────
@@ -420,13 +422,14 @@ if __name__ == "__main__":
     log.info("Volume Spike Scanner started.")
     send_alert(
         "🔊 <b>Volume Spike Scanner Online</b>\n"
-        "Scanning every 15 minutes at :01 :16 :31 :46\n\n"
-        "🔥 Extreme spike  — RVOL 5×+\n"
-        "⚡ High spike     — RVOL 3–5×\n"
-        "📊 Normal spike   — RVOL 2–3×\n\n"
+        "Scanning every hour at :01\n\n"
+        "🔥 Extreme spike  — RVOL 5×+  (Z ≥ 2.5, both required)\n"
+        "⚡ High spike     — RVOL 3–5× (Z ≥ 2.5, both required)\n\n"
+        "📵 Normal spikes suppressed\n"
+        "⏱ 4-hour cooldown per coin\n"
         "Includes CVD (buy/sell split) + divergence warnings"
     )
-    run_scan(["15m", "1h"])
+    run_scan()
     while True:
-        intervals = wait_until_next_scan()
-        run_scan(intervals)
+        wait_until_next_scan()
+        run_scan()
