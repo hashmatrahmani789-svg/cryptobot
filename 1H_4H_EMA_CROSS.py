@@ -42,7 +42,6 @@ def save_memory(memory):
 
 
 def is_new_signal(memory, key, direction):
-    """Returns True if this is a new signal (not already fired)."""
     return memory.get(key) != direction
 
 
@@ -179,6 +178,72 @@ def fmt_price(p):
     return f"${p:.6f}"
 
 
+def fmt_coin(e, direction):
+    change = e["change_24h"]
+    change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
+    if direction == "BULLISH":
+        return (
+            f"🟢 <b>{e['ticker']}</b> [{e['signal']}] — {e['mcap']}\n"
+            f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
+            f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA: {e['ema_dist']:.1f}%\n"
+            f"🎯 Long: {fmt_price(e['cross_low'])}→{fmt_price(e['cross_high'])}\n"
+            f"<a href='{e['tv_link']}'>📈 Chart</a>"
+        )
+    else:
+        return (
+            f"🔴 <b>{e['ticker']}</b> [{e['signal']}] — {e['mcap']}\n"
+            f"💸 {fmt_price(e['price'])} | 24h: {change_str}\n"
+            f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA: {e['ema_dist']:.1f}%\n"
+            f"⚠️ Short: {fmt_price(e['cross_high'])}→{fmt_price(e['cross_low'])}\n"
+            f"<a href='{e['tv_link']}'>📉 Chart</a>"
+        )
+
+
+def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
+    has_signals = any([bullish_1h, bearish_1h, bullish_4h, bearish_4h])
+
+    if not has_signals:
+        return (
+            f"🔍 <b>EMA 12/21 Scan</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"No new crosses on 1H or 4H\n\n"
+            f"🕐 {now_str}"
+        )
+
+    lines = []
+
+    if bullish_1h or bearish_1h:
+        lines.append("⚡ <b>1H SIGNALS</b> ⚡")
+        lines.append("─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─")
+        if bullish_1h:
+            lines.append("🟢🟢 <b>BULLISH</b> 🟢🟢\n")
+            for e in bullish_1h:
+                lines.append(fmt_coin(e, "BULLISH"))
+                lines.append("")
+        if bearish_1h:
+            lines.append("🔴🔴 <b>BEARISH</b> 🔴🔴\n")
+            for e in bearish_1h:
+                lines.append(fmt_coin(e, "BEARISH"))
+                lines.append("")
+
+    if bullish_4h or bearish_4h:
+        lines.append("🧱 <b>4H SIGNALS</b> 🧱")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        if bullish_4h:
+            lines.append("🟢🟢 <b>BULLISH</b> 🟢🟢\n")
+            for e in bullish_4h:
+                lines.append(fmt_coin(e, "BULLISH"))
+                lines.append("")
+        if bearish_4h:
+            lines.append("🔴🔴 <b>BEARISH</b> 🔴🔴\n")
+            for e in bearish_4h:
+                lines.append(fmt_coin(e, "BEARISH"))
+                lines.append("")
+
+    lines.append(f"🕐 {now_str}")
+    return "\n".join(lines)
+
+
 def scan_timeframe(interval, coins, memory):
     bullish = []
     bearish = []
@@ -202,7 +267,6 @@ def scan_timeframe(interval, coins, memory):
 
         key = f"{ticker}_{interval}"
 
-        # Only fire if this is a new signal
         if not is_new_signal(memory, key, direction):
             log.info(f"{ticker} [{interval}] {direction} — already fired, skipping")
             new_memory[key] = direction
@@ -242,57 +306,6 @@ def scan_timeframe(interval, coins, memory):
     return bullish, bearish, new_memory
 
 
-def fmt_coin(e):
-    change = e["change_24h"]
-    change_str = f"+{change:.1f}%" if change >= 0 else f"{change:.1f}%"
-    return (
-        f"<b>{e['ticker']}</b> [{e['signal']}] — MCap: {e['mcap']}\n"
-        f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
-        f"📊 Vol: {fmt_vol(e['volume_24h'])} | EMA dist: {e['ema_dist']:.1f}%\n"
-        f"📉 Cross candle: {fmt_price(e['cross_low'])} — {fmt_price(e['cross_high'])}\n"
-        f"<a href='{e['tv_link']}'>📈 TradingView</a>"
-    )
-
-
-def build_message(bullish_1h, bearish_1h, bullish_4h, bearish_4h, now_str):
-    has_signals = any([bullish_1h, bearish_1h, bullish_4h, bearish_4h])
-
-    if not has_signals:
-        return (
-            f"🔍 <b>EMA 12/21 Scan</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"No new crosses found on 1H or 4H\n\n"
-            f"🕐 {now_str}"
-        )
-
-    lines = ["📊 <b>EMA 12/21 — Cross Alert</b>", "━━━━━━━━━━━━━━━━"]
-
-    if bullish_1h or bearish_1h:
-        lines.append("\n⏱ <b>1H Timeframe</b>")
-        if bullish_1h:
-            lines.append("📈 <b>Bullish</b>")
-            for e in bullish_1h:
-                lines.append(fmt_coin(e))
-        if bearish_1h:
-            lines.append("📉 <b>Bearish</b>")
-            for e in bearish_1h:
-                lines.append(fmt_coin(e))
-
-    if bullish_4h or bearish_4h:
-        lines.append("\n⏱ <b>4H Timeframe</b>")
-        if bullish_4h:
-            lines.append("📈 <b>Bullish</b>")
-            for e in bullish_4h:
-                lines.append(fmt_coin(e))
-        if bearish_4h:
-            lines.append("📉 <b>Bearish</b>")
-            for e in bearish_4h:
-                lines.append(fmt_coin(e))
-
-    lines.append(f"\n🕐 {now_str}")
-    return "\n".join(lines)
-
-
 def run_scan():
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     log.info(f"Scanning... {now_str}")
@@ -302,7 +315,6 @@ def run_scan():
     bullish_1h, bearish_1h, new_mem_1h = scan_timeframe("1h", coins, memory)
     bullish_4h, bearish_4h, new_mem_4h = scan_timeframe("4h", coins, memory)
 
-    # Merge and save updated memory
     memory.update(new_mem_1h)
     memory.update(new_mem_4h)
     save_memory(memory)
