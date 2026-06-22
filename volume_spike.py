@@ -1,24 +1,25 @@
 """
-Volume Spike Signal
-===================
-Scans all 500M+ market cap coins on Coinbase for volume spikes.
-Runs on the 1h timeframe only (15m removed to reduce noise).
+Volume Spike Signal — Early Long / Short
+=========================================
+Scans all 500M+ market cap coins on Coinbase for real volume spikes.
+Filters out fake pumps and fake dumps using CVD + close position.
 
 Signal tiers (RVOL-based):
-  !! High spike    : RVOL 3–5×
-  !!! Extreme spike: RVOL 5×+
+  ⚡ High spike    : RVOL 3–5×
+  🔥 Extreme spike : RVOL 5×+
 
-  Normal spikes (2–3×) are intentionally suppressed.
+Rules — ALL must pass to fire:
+  1. RVOL   ≥ 3.0×
+  2. Z-Score ≥ 2.5
+  3. Price moved ≥ 1% on the spike candle
+  4. LONG  → close in top 60% of candle range + buyers > 55% CVD
+  5. SHORT → close in bottom 40% of candle range + sellers > 55% CVD
 
-Rules (BOTH must fire):
-  • RVOL   ≥ 3.0×
-  • Z-Score ≥ 2.5
+Fake pump filter : volume spike + price up but sellers dominate → DROPPED
+Fake dump filter : volume spike + price down but buyers dominate → DROPPED
 
-Also detects:
-  • CVD (buy vs sell volume split per candle)
-  • Divergence warning (price up but sellers dominating)
-  • Consecutive spike count
-  • 4-hour cooldown per coin to suppress repeat alerts
+Sends two separate Telegram messages (LONG / SHORT) for instant recognition.
+4-hour cooldown per coin.
 
 Env vars required:
   TELEGRAM_TOKEN
@@ -43,31 +44,26 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-# ── Thresholds (tightened) ─────────────────────────────────────────────────────
-VOL_WINDOW     = 50       # Wider baseline → more stable average
-RVOL_THRESH    = 3.0      # Raised from 2.0 — skips NORMAL tier entirely
-ZSCORE_THRESH  = 2.5      # Raised from 2.0
-REQUIRE_BOTH   = True     # BOTH RVOL and Z-Score must fire (was False)
-COOLDOWN_HOURS = 4        # Suppress repeat alerts per coin per timeframe
-
-# ── Timeframes (1h only) ───────────────────────────────────────────────────────
-INTERVALS = ["1h"]
-
-GRANULARITY_MAP = {
-    "1h": "ONE_HOUR",
-}
-
-LOOKBACK_LIMIT = {
-    "1h": 150,   # Extra candles so VOL_WINDOW=50 has a solid history
-}
+# ── Thresholds ─────────────────────────────────────────────────────────────────
+VOL_WINDOW       = 50      # Candles used for baseline average
+RVOL_THRESH      = 3.0     # Minimum RVOL to qualify
+ZSCORE_THRESH    = 2.5     # Minimum Z-Score to qualify
+MIN_PRICE_CHANGE = 1.0     # Minimum % candle move to qualify
+CVD_THRESH       = 55.0    # Minimum buy% (long) or sell% (short) to confirm
+CLOSE_POS_LONG   = 60.0    # Close must be in top X% of range for LONG
+CLOSE_POS_SHORT  = 40.0    # Close must be in bottom X% of range for SHORT
+COOLDOWN_HOURS   = 4       # Suppress repeat alerts per coin
 
 SIGNAL_MEMORY_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "signal_memory_vol_spike.json"
 )
 
+GRANULARITY_MAP = {"1h": "ONE_HOUR"}
+LOOKBACK_LIMIT  = {"1h": 150}
+
 
 # ─────────────────────────────────────────
-# SIGNAL MEMORY  (with timestamp cooldown)
+# MEMORY
 # ─────────────────────────────────────────
 
 def load_memory():
@@ -89,28 +85,18 @@ def save_memory(memory):
 
 
 def is_new_signal(memory, key, value):
-    """
-    Returns True only if:
-      1. The stored tier/direction changed, OR
-      2. The cooldown window has elapsed since the last alert.
-    """
     entry = memory.get(key)
     if entry is None:
         return True
-
-    # Support old flat-string format gracefully
     if isinstance(entry, str):
         return entry != value
-
     last_val  = entry.get("value")
     last_ts   = entry.get("ts", 0)
-    now_ts    = datetime.now(timezone.utc).timestamp()
-    elapsed_h = (now_ts - last_ts) / 3600
-
+    elapsed_h = (datetime.now(timezone.utc).timestamp() - last_ts) / 3600
     if last_val != value:
-        return True                         # Signal changed — always fire
+        return True
     if elapsed_h >= COOLDOWN_HOURS:
-        return True                         # Cooldown expired — fire again
+        return True
     return False
 
 
@@ -149,11 +135,10 @@ def send_alert(message):
 
 
 # ─────────────────────────────────────────
-# COINBASE CANDLES
+# CANDLES
 # ─────────────────────────────────────────
 
 def get_candles(ticker, interval):
-    """Fetch OHLCV candles from Coinbase. Returns list of dicts or None."""
     granularity = GRANULARITY_MAP[interval]
     limit       = LOOKBACK_LIMIT[interval]
     product_id  = f"{ticker}-USD"
@@ -167,7 +152,6 @@ def get_candles(ticker, interval):
         candles = data.get("candles", [])
         if not candles or len(candles) < VOL_WINDOW + 2:
             return None
-        # Coinbase returns newest first — reverse and drop last (incomplete candle)
         candles = list(reversed(candles))[:-1]
         return [
             {
@@ -189,25 +173,17 @@ def get_candles(ticker, interval):
 # ─────────────────────────────────────────
 
 def calc_rvol_zscore(candles):
-    """Returns (rvol, zscore, avg_vol) vs last N candles."""
     volumes = [c["volume"] for c in candles]
     window  = volumes[-VOL_WINDOW - 1:-1]
     current = volumes[-1]
-
-    avg = sum(window) / len(window)
-    std = (sum((v - avg) ** 2 for v in window) / len(window)) ** 0.5
-
-    rvol   = current / avg if avg > 0 else 0
-    zscore = (current - avg) / std if std > 0 else 0
+    avg     = sum(window) / len(window)
+    std     = (sum((v - avg) ** 2 for v in window) / len(window)) ** 0.5
+    rvol    = current / avg if avg > 0 else 0
+    zscore  = (current - avg) / std if std > 0 else 0
     return round(rvol, 2), round(zscore, 2), round(avg, 2)
 
 
 def calc_cvd(candle):
-    """
-    Estimate buy vs sell volume using candle body position.
-      buy_vol  = volume × (close - low) / (high - low)
-      sell_vol = volume − buy_vol
-    """
     high, low, close, volume = (
         candle["high"], candle["low"], candle["close"], candle["volume"]
     )
@@ -217,19 +193,9 @@ def calc_cvd(candle):
     else:
         buy_vol  = volume * ((close - low) / rng)
         sell_vol = volume - buy_vol
-
     buy_pct  = round(buy_vol  / volume * 100, 1) if volume > 0 else 50.0
     sell_pct = round(100 - buy_pct, 1)
-    delta    = int(buy_vol - sell_vol)
-    return buy_pct, sell_pct, delta
-
-
-def get_tier(rvol):
-    if rvol >= 5.0:
-        return "EXTREME"
-    elif rvol >= 3.0:
-        return "HIGH"
-    return "NONE"   # NORMAL (2–3×) is intentionally excluded
+    return buy_pct, sell_pct
 
 
 def get_close_position(candle):
@@ -239,9 +205,42 @@ def get_close_position(candle):
     return round((candle["close"] - candle["low"]) / rng * 100, 1)
 
 
-def is_spike(rvol, zscore):
-    """Both RVOL and Z-Score must exceed their thresholds."""
-    return rvol >= RVOL_THRESH and zscore >= ZSCORE_THRESH
+def get_price_change_pct(candle):
+    if candle["open"] == 0:
+        return 0.0
+    return round(abs(candle["close"] - candle["open"]) / candle["open"] * 100, 2)
+
+
+def get_tier(rvol):
+    if rvol >= 5.0:
+        return "EXTREME"
+    if rvol >= 3.0:
+        return "HIGH"
+    return "NONE"
+
+
+def classify_signal(candle, buy_pct, sell_pct, close_pos, price_change):
+    """
+    Returns 'LONG', 'SHORT', or None (fake / no signal).
+
+    LONG  = price up + closes top 60%+ + buyers > 55%
+    SHORT = price down + closes bottom 40%- + sellers > 55%
+    Anything else = fake pump/dump → dropped
+    """
+    is_up = candle["close"] >= candle["open"]
+
+    if is_up:
+        if close_pos >= CLOSE_POS_LONG and buy_pct >= CVD_THRESH:
+            return "LONG"
+        else:
+            log.debug("Fake pump detected — dropped")
+            return None
+    else:
+        if close_pos <= CLOSE_POS_SHORT and sell_pct >= CVD_THRESH:
+            return "SHORT"
+        else:
+            log.debug("Fake dump detected — dropped")
+            return None
 
 
 # ─────────────────────────────────────────
@@ -251,8 +250,8 @@ def is_spike(rvol, zscore):
 def fmt_price(p):
     if not p:
         return "N/A"
-    if p >= 1000:  return f"${p:,.2f}"
-    if p >= 1:     return f"${p:.4f}"
+    if p >= 1000: return f"${p:,.2f}"
+    if p >= 1:    return f"${p:.4f}"
     return f"${p:.6f}"
 
 
@@ -263,22 +262,25 @@ def fmt_vol(v):
     return f"{v:.2f}"
 
 
-def fmt_entry(e):
-    tier_emoji      = {"EXTREME": "🔥", "HIGH": "⚡"}.get(e["tier"], "⚡")
-    direction_emoji = "🟢" if e["direction"] == "BUY" else "🔴"
-    div_line        = "\n⚠️ <b>DIVERGENCE</b>: Price up but sellers dominating" if e["divergence"] else ""
-    consec_line     = f"\n🔁 <b>{e['consecutive']} consecutive spikes</b>" if e["consecutive"] >= 2 else ""
-
+def fmt_long(e):
+    tier_emoji = "🔥" if e["tier"] == "EXTREME" else "⚡"
     return (
-        f"\n<b>{e['ticker']}</b> — {e['mcap']}\n"
-        f"{tier_emoji} {e['tier']} SPIKE  {direction_emoji} {e['direction']}\n"
-        f"💰 Price: {fmt_price(e['close'])}  |  Avg vol: {fmt_vol(e['avg_vol'])}\n"
-        f"📦 Volume: {fmt_vol(e['volume'])}  (RVOL <b>{e['rvol']}×</b>  Z-Score <b>{e['zscore']}</b>)\n"
-        f"📊 CVD: 🟢 Buy {e['buy_pct']}%  🔴 Sell {e['sell_pct']}%  |  Δ {e['delta']:+,}\n"
-        f"🕯 Close: {fmt_price(e['close'])}  (top {100 - int(e['close_pos'])}% of range)"
-        f"{div_line}"
-        f"{consec_line}\n"
-        f"<a href='https://www.tradingview.com/chart/?symbol=COINBASE:{e['ticker']}USD'>📈 Chart</a>"
+        f"🟢 <b>{e['ticker']}</b> [{e['tier']}] — {e['mcap']}\n"
+        f"💰 {fmt_price(e['close'])} | Move: +{e['price_change']}%\n"
+        f"📊 Vol: {fmt_vol(e['volume'])} | RVOL: {tier_emoji}<b>{e['rvol']}×</b> | Z: <b>{e['zscore']}</b>\n"
+        f"🎯 Close pos: top {100 - int(e['close_pos'])}% | Buyers: {e['buy_pct']}%\n"
+        f"<a href='{e['tv_link']}'>📈 Chart</a>"
+    )
+
+
+def fmt_short(e):
+    tier_emoji = "🔥" if e["tier"] == "EXTREME" else "⚡"
+    return (
+        f"🔴 <b>{e['ticker']}</b> [{e['tier']}] — {e['mcap']}\n"
+        f"💸 {fmt_price(e['close'])} | Move: -{e['price_change']}%\n"
+        f"📊 Vol: {fmt_vol(e['volume'])} | RVOL: {tier_emoji}<b>{e['rvol']}×</b> | Z: <b>{e['zscore']}</b>\n"
+        f"🎯 Close pos: bottom {int(e['close_pos'])}% | Sellers: {e['sell_pct']}%\n"
+        f"<a href='{e['tv_link']}'>📉 Chart</a>"
     )
 
 
@@ -296,119 +298,145 @@ def run_scan():
         return
 
     memory  = load_memory()
-    results = {interval: {"EXTREME": [], "HIGH": []} for interval in INTERVALS}
+    longs   = {"EXTREME": [], "HIGH": []}
+    shorts  = {"EXTREME": [], "HIGH": []}
     skipped = 0
+    dropped = 0
 
     for ticker, mcap in coins:
-        for interval in INTERVALS:
-            candles = get_candles(ticker, interval)
-            if not candles:
-                skipped += 1
-                continue
+        candles = get_candles(ticker, "1h")
+        if not candles:
+            skipped += 1
+            time.sleep(0.2)
+            continue
 
-            rvol, zscore, avg_vol = calc_rvol_zscore(candles)
+        rvol, zscore, avg_vol = calc_rvol_zscore(candles)
 
-            if not is_spike(rvol, zscore):
-                continue
+        if rvol < RVOL_THRESH or zscore < ZSCORE_THRESH:
+            time.sleep(0.2)
+            continue
 
-            tier = get_tier(rvol)
-            if tier == "NONE":
-                continue  # NORMAL tier suppressed
+        tier = get_tier(rvol)
+        if tier == "NONE":
+            time.sleep(0.2)
+            continue
 
-            last       = candles[-1]
-            buy_pct, sell_pct, delta = calc_cvd(last)
-            close_pos  = get_close_position(last)
-            direction  = "BUY" if last["close"] >= last["open"] else "SELL"
-            divergence = direction == "BUY" and sell_pct > 60
+        last         = candles[-1]
+        price_change = get_price_change_pct(last)
+        buy_pct, sell_pct = calc_cvd(last)
+        close_pos    = get_close_position(last)
 
-            # Count consecutive candles above RVOL threshold
-            consecutive = 0
-            for c in reversed(candles):
-                if c["volume"] > avg_vol * RVOL_THRESH:
-                    consecutive += 1
-                else:
-                    break
+        # Filter: price must have actually moved
+        if price_change < MIN_PRICE_CHANGE:
+            log.debug(f"{ticker} dropped — price change {price_change}% < {MIN_PRICE_CHANGE}%")
+            dropped += 1
+            time.sleep(0.2)
+            continue
 
-            sig_key = f"{ticker}_{interval}_spike"
-            sig_val = f"{tier}_{direction}"
+        # Classify: LONG, SHORT, or fake → None
+        direction = classify_signal(last, buy_pct, sell_pct, close_pos, price_change)
+        if direction is None:
+            log.info(f"{ticker} — fake pump/dump detected, dropped")
+            dropped += 1
+            time.sleep(0.2)
+            continue
 
-            if not is_new_signal(memory, sig_key, sig_val):
-                log.debug(f"{ticker} [{interval}] suppressed (cooldown or same signal)")
-                continue
+        sig_key = f"{ticker}_1h_spike"
+        sig_val = f"{tier}_{direction}"
 
-            update_memory(memory, sig_key, sig_val)
+        if not is_new_signal(memory, sig_key, sig_val):
+            log.debug(f"{ticker} suppressed (cooldown)")
+            time.sleep(0.2)
+            continue
 
-            entry = {
-                "ticker":      ticker,
-                "mcap":        mcap,
-                "tier":        tier,
-                "direction":   direction,
-                "close":       last["close"],
-                "volume":      last["volume"],
-                "avg_vol":     avg_vol,
-                "rvol":        rvol,
-                "zscore":      zscore,
-                "buy_pct":     buy_pct,
-                "sell_pct":    sell_pct,
-                "delta":       delta,
-                "close_pos":   close_pos,
-                "divergence":  divergence,
-                "consecutive": consecutive,
-            }
+        update_memory(memory, sig_key, sig_val)
 
-            results[interval][tier].append(entry)
-            log.info(f"{ticker} [{interval}] {tier} SPIKE — RVOL {rvol}× Z {zscore} {direction}")
+        entry = {
+            "ticker":       ticker,
+            "mcap":         mcap,
+            "tier":         tier,
+            "direction":    direction,
+            "close":        last["close"],
+            "volume":       last["volume"],
+            "avg_vol":      avg_vol,
+            "rvol":         rvol,
+            "zscore":       zscore,
+            "buy_pct":      buy_pct,
+            "sell_pct":     sell_pct,
+            "close_pos":    close_pos,
+            "price_change": price_change,
+            "tv_link":      f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
+        }
+
+        if direction == "LONG":
+            longs[tier].append(entry)
+            log.info(f"{ticker} LONG {tier} — RVOL {rvol}× Z {zscore} | Close top {100-int(close_pos)}% | Buy {buy_pct}%")
+        else:
+            shorts[tier].append(entry)
+            log.info(f"{ticker} SHORT {tier} — RVOL {rvol}× Z {zscore} | Close bot {int(close_pos)}% | Sell {sell_pct}%")
 
         time.sleep(0.2)
 
     save_memory(memory)
-    log.info(f"{skipped} candle fetches skipped")
+    log.info(f"{skipped} skipped (no data) | {dropped} dropped (fake/no move)")
 
-    # ── Send alerts per timeframe ──────────────────────────────────────────────
-    for interval in INTERVALS:
-        tiers = results[interval]
-        total = sum(len(v) for v in tiers.values())
-        if total == 0:
-            log.info(f"No new volume spikes on {interval}.")
-            continue
+    total_longs  = sum(len(v) for v in longs.values())
+    total_shorts = sum(len(v) for v in shorts.values())
 
-        tf_label = {"1h": "1-Hour"}.get(interval, interval)
+    if total_longs == 0 and total_shorts == 0:
+        log.info("No real volume spikes found.")
+        return
+
+    # ── LONG message ─────────────────────────────────────────────────────────
+    if total_longs > 0:
         lines = [
-            f"🔊 <b>VOLUME SPIKE SIGNAL — {tf_label}</b>",
-            "╔════════════════════╗",
-            f"🕐 {now_str}",
-            "╚════════════════════╝",
+            "🟢 <b>VOLUME SPIKE — LONG SETUP</b> 🟢",
+            "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
         ]
+        if longs["EXTREME"]:
+            lines.append("🔥 <b>EXTREME (5×+)</b>\n")
+            for e in longs["EXTREME"]:
+                lines.append(fmt_long(e))
+                lines.append("")
+        if longs["HIGH"]:
+            lines.append("⚡ <b>HIGH (3–5×)</b>\n")
+            for e in longs["HIGH"]:
+                lines.append(fmt_long(e))
+                lines.append("")
+        lines.append(f"🕐 {now_str}")
+        send_alert("\n".join(lines))
 
-        if tiers["EXTREME"]:
-            lines.append(f"\n🔥 <b>EXTREME SPIKES (5×+)</b> — {len(tiers['EXTREME'])} coins")
-            for e in tiers["EXTREME"]:
-                lines.append(fmt_entry(e))
-
-        if tiers["HIGH"]:
-            lines.append(f"\n⚡ <b>HIGH SPIKES (3–5×)</b> — {len(tiers['HIGH'])} coins")
-            for e in tiers["HIGH"]:
-                lines.append(fmt_entry(e))
-
+    # ── SHORT message ─────────────────────────────────────────────────────────
+    if total_shorts > 0:
+        lines = [
+            "🔴 <b>VOLUME SPIKE — SHORT SETUP</b> 🔴",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+        if shorts["EXTREME"]:
+            lines.append("🔥 <b>EXTREME (5×+)</b>\n")
+            for e in shorts["EXTREME"]:
+                lines.append(fmt_short(e))
+                lines.append("")
+        if shorts["HIGH"]:
+            lines.append("⚡ <b>HIGH (3–5×)</b>\n")
+            for e in shorts["HIGH"]:
+                lines.append(fmt_short(e))
+                lines.append("")
+        lines.append(f"🕐 {now_str}")
         send_alert("\n".join(lines))
 
     log.info("Scan complete.")
 
 
 # ─────────────────────────────────────────
-# TIMING — synced to 1h candle close
+# TIMING
 # ─────────────────────────────────────────
 
 def wait_until_next_scan():
-    """
-    1h candles close at :00 each hour.
-    Scan fires at :01 to ensure the candle is confirmed.
-    """
     now      = datetime.now(timezone.utc)
     next_run = now.replace(minute=1, second=0, microsecond=0)
     if now.minute >= 1:
         next_run += timedelta(hours=1)
-
     sleep_secs = (next_run - now).total_seconds()
     log.info(f"Next scan at {next_run.strftime('%H:%M UTC')} — sleeping {sleep_secs/60:.1f}m")
     time.sleep(max(sleep_secs, 1))
@@ -423,11 +451,11 @@ if __name__ == "__main__":
     send_alert(
         "🔊 <b>Volume Spike Scanner Online</b>\n"
         "Scanning every hour at :01\n\n"
-        "🔥 Extreme spike  — RVOL 5×+  (Z ≥ 2.5, both required)\n"
-        "⚡ High spike     — RVOL 3–5× (Z ≥ 2.5, both required)\n\n"
-        "📵 Normal spikes suppressed\n"
-        "⏱ 4-hour cooldown per coin\n"
-        "Includes CVD (buy/sell split) + divergence warnings"
+        "🟢 LONG SETUP  — spike up + close top 60% + buyers >55%\n"
+        "🔴 SHORT SETUP — spike down + close bot 40% + sellers >55%\n\n"
+        "🔥 Extreme: RVOL 5×+  |  ⚡ High: RVOL 3–5×\n"
+        "❌ Fake pumps/dumps filtered out automatically\n"
+        "⏱ 4-hour cooldown per coin"
     )
     run_scan()
     while True:
