@@ -136,8 +136,9 @@ def get_oi_list():
             timeout=15,
         )
         data = r.json()
-        if data.get("code") != "0":
-            log.error(f"API error: {data.get('msg')}")
+        log.info(f"OI API response code: {data.get('code')} | msg: {data.get('msg')}")
+        if str(data.get("code")) != "0":   # FIX: API returns int 0, not string "0"
+            log.error(f"API error: {data.get('msg')} | full response: {data}")
             return []
         return data.get("data", [])
     except Exception as e:

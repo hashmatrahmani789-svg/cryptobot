@@ -232,10 +232,10 @@ def wait_until_daily_close():
     log.info(f"Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')} — sleeping {sleep_secs/3600:.1f}h")
     time.sleep(sleep_secs)
 
-
 if __name__ == "__main__":
     log.info("Daily EMA 12/21 Cross Scanner started.")
     send_alert("✅ <b>Daily EMA Scanner Online</b>\nScanning all coins $500M+ market cap every day at 00:05 UTC.")
+    run_scan()
     while True:
         wait_until_daily_close()
         run_scan()
