@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 EMA_PERIOD       = 50
-ZONE_TOLERANCE   = 0.003  # 0.3% zone around EMA50 = "inside"
+ZONE_TOLERANCE   = 0.003  # 0.3% zone around EMA50
 
 SIGNAL_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_memory_ema50.json")
 
@@ -67,7 +67,7 @@ def send_alert(message):
 
 
 def get_candles(ticker, interval):
-    granularity_map = {"1h": "ONE_HOUR", "4h": "FOUR_HOUR"}
+    granularity_map = {"4h": "FOUR_HOUR"}
     granularity = granularity_map.get(interval)
     product_id = f"{ticker}-USD"
     try:
@@ -137,25 +137,38 @@ def fmt_price(p):
     return f"${p:.6f}"
 
 
-def fmt_entry(e):
+def fmt_above(e):
     change_str = f"{e['change_24h']:+.2f}%"
     return (
-        f"\n<b>{e['ticker']}</b> — {e['mcap']}\n"
-        f"💰 {fmt_price(e['price'])}  ({change_str})\n"
-        f"📦 Vol: {fmt_vol(e['volume_24h'])}\n"
-        f"📊 EMA50: {fmt_price(e['ema'])}  Close: {fmt_price(e['close'])}\n"
+        f"🟢 <b>{e['ticker']}</b> — {e['mcap']}\n"
+        f"💰 {fmt_price(e['price'])} | 24h: {change_str}\n"
+        f"📊 Vol: {fmt_vol(e['volume_24h'])}\n"
+        f"📐 EMA50: {fmt_price(e['ema'])} | Close: {fmt_price(e['close'])}\n"
         f"<a href='{e['tv_link']}'>📈 Chart</a>"
+    )
+
+
+def fmt_below(e):
+    change_str = f"{e['change_24h']:+.2f}%"
+    return (
+        f"🔴 <b>{e['ticker']}</b> — {e['mcap']}\n"
+        f"💸 {fmt_price(e['price'])} | 24h: {change_str}\n"
+        f"📊 Vol: {fmt_vol(e['volume_24h'])}\n"
+        f"📐 EMA50: {fmt_price(e['ema'])} | Close: {fmt_price(e['close'])}\n"
+        f"<a href='{e['tv_link']}'>📉 Chart</a>"
     )
 
 
 def build_entry(ticker, mcap, td, ema, close):
     return {
-        "ticker": ticker, "mcap": mcap,
-        "price": td["price"] if td else 0,
+        "ticker":     ticker,
+        "mcap":       mcap,
+        "price":      td["price"]      if td else 0,
         "change_24h": td["change_24h"] if td else 0,
         "volume_24h": td["volume_24h"] if td else 0,
-        "ema": ema, "close": close,
-        "tv_link": f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
+        "ema":        ema,
+        "close":      close,
+        "tv_link":    f"https://www.tradingview.com/chart/?symbol=COINBASE:{ticker}USD"
     }
 
 
@@ -170,124 +183,78 @@ def run_scan():
 
     memory = load_memory()
 
-    # Signal 1: 1H EMA50 close
-    h1_above = []
-    h1_below = []
-    # Signal 2: 4H EMA50 close
-    close_above  = []
-    close_below  = []
-    close_inside = []
-
+    above = []
+    below = []
     skipped = 0
 
     for ticker, mcap in coins:
-        # ── Signal 2: 4H EMA50 CLOSE ─────────────────────
-        candles_4h = get_candles(ticker, "4h")
-        if candles_4h:
-            closes_4h = [c["close"] for c in candles_4h]
-            ema_4h    = calc_ema(closes_4h, EMA_PERIOD)
-            e4        = ema_4h[-1]
-            c4close   = candles_4h[-1]["close"]
-            tol       = e4 * ZONE_TOLERANCE
-
-            if c4close > e4 + tol:
-                close_val = "ABOVE"
-            elif c4close < e4 - tol:
-                close_val = "BELOW"
-            else:
-                close_val = "INSIDE"
-
-            close_key = f"{ticker}_4h_close"
-            if is_new_signal(memory, close_key, close_val):
-                td = get_ticker(ticker)
-                entry = build_entry(ticker, mcap, td, e4, c4close)
-                memory[close_key] = close_val
-                if close_val == "ABOVE":
-                    close_above.append(entry)
-                    log.info(f"{ticker} 4H closed ABOVE EMA50 — NEW")
-                elif close_val == "BELOW":
-                    close_below.append(entry)
-                    log.info(f"{ticker} 4H closed BELOW EMA50 — NEW")
-                else:
-                    close_inside.append(entry)
-                    log.info(f"{ticker} 4H closed INSIDE EMA50 — NEW")
-                time.sleep(0.1)
-        else:
+        candles = get_candles(ticker, "4h")
+        if not candles:
             skipped += 1
+            continue
 
-        # ── Signal 1: 1H EMA50 CLOSE ─────────────────────
-        candles_1h = get_candles(ticker, "1h")
-        if candles_1h:
-            closes_1h = [c["close"] for c in candles_1h]
-            ema_1h    = calc_ema(closes_1h, EMA_PERIOD)
-            e1        = ema_1h[-1]
-            c1close   = candles_1h[-1]["close"]
+        closes = [c["close"] for c in candles]
+        ema    = calc_ema(closes, EMA_PERIOD)
+        e4     = ema[-1]
+        close  = candles[-1]["close"]
+        tol    = e4 * ZONE_TOLERANCE
 
-            h1_dir = "ABOVE" if c1close > e1 else "BELOW"
-            h1_key = f"{ticker}_1h_close"
-
-            if is_new_signal(memory, h1_key, h1_dir):
-                td = get_ticker(ticker)
-                entry = build_entry(ticker, mcap, td, e1, c1close)
-                memory[h1_key] = h1_dir
-                if h1_dir == "ABOVE":
-                    h1_above.append(entry)
-                    log.info(f"{ticker} 1H closed ABOVE EMA50 — NEW")
-                else:
-                    h1_below.append(entry)
-                    log.info(f"{ticker} 1H closed BELOW EMA50 — NEW")
-                time.sleep(0.1)
+        if close > e4 + tol:
+            direction = "ABOVE"
+        elif close < e4 - tol:
+            direction = "BELOW"
         else:
-            skipped += 1
+            continue  # inside zone — skip
 
-        time.sleep(0.2)
+        key = f"{ticker}_4h_close"
+        if not is_new_signal(memory, key, direction):
+            log.info(f"{ticker} 4H {direction} — already fired, skipping")
+            continue
+
+        td = get_ticker(ticker)
+        entry = build_entry(ticker, mcap, td, e4, close)
+        memory[key] = direction
+
+        if direction == "ABOVE":
+            above.append(entry)
+            log.info(f"{ticker} 4H closed ABOVE EMA50 — NEW")
+        else:
+            below.append(entry)
+            log.info(f"{ticker} 4H closed BELOW EMA50 — NEW")
+
+        time.sleep(0.1)
 
     save_memory(memory)
     log.info(f"{skipped} coins skipped — no Coinbase data")
 
-    # ── Send Signal 1: 1H EMA50 CLOSE ───────────────────
-    if h1_above or h1_below:
+    if not above and not below:
+        log.info("No new EMA50 signals.")
+        return
+
+    # ── ABOVE message ────────────────────────────────────
+    if above:
         lines = [
-            "⚡ <b>1H EMA50 CLOSE SIGNAL</b>",
-            "╔════════════════════╗",
-            f"🕐 {now_str}",
-            "╚════════════════════╝",
+            "🟢 <b>EMA50 — 4H CLOSED ABOVE</b> 🟢",
+            "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
         ]
-        if h1_above:
-            lines.append(f"\n🟢 <b>CLOSED ABOVE EMA50</b> — {len(h1_above)} coins")
-            for e in h1_above:
-                lines.append(fmt_entry(e))
-        if h1_below:
-            lines.append(f"\n🔴 <b>CLOSED BELOW EMA50</b> — {len(h1_below)} coins")
-            for e in h1_below:
-                lines.append(fmt_entry(e))
+        for e in above:
+            lines.append(fmt_above(e))
+            lines.append("")
+        lines.append(f"🕐 {now_str}")
         send_alert("\n".join(lines))
 
-    # ── Send Signal 2: 4H EMA50 CLOSE ───────────────────
-    if close_above or close_below or close_inside:
+    # ── BELOW message ────────────────────────────────────
+    if below:
         lines = [
-            "🕯 <b>4H EMA50 CLOSE SIGNAL</b>",
-            "══════════════════════",
-            f"🕐 {now_str}",
-            "══════════════════════",
+            "🔴 <b>EMA50 — 4H CLOSED BELOW</b> 🔴",
+            "━━━━━━━━━━━━━━━━━━━━",
         ]
-        if close_above:
-            lines.append(f"\n💚 <b>CLOSED ABOVE EMA50</b> — {len(close_above)} coins")
-            for e in close_above:
-                lines.append(fmt_entry(e))
-        if close_below:
-            lines.append(f"\n❤️ <b>CLOSED BELOW EMA50</b> — {len(close_below)} coins")
-            for e in close_below:
-                lines.append(fmt_entry(e))
-        if close_inside:
-            lines.append(f"\n🔵 <b>CLOSED INSIDE EMA50 ZONE</b> — {len(close_inside)} coins")
-            for e in close_inside:
-                lines.append(fmt_entry(e))
+        for e in below:
+            lines.append(fmt_below(e))
+            lines.append("")
+        lines.append(f"🕐 {now_str}")
         send_alert("\n".join(lines))
 
-    total = len(h1_above) + len(h1_below) + len(close_above) + len(close_below) + len(close_inside)
-    if total == 0:
-        log.info("No new EMA50 signals found.")
     log.info("Scan complete.")
 
 
@@ -305,9 +272,9 @@ if __name__ == "__main__":
     log.info("EMA50 Scanner started.")
     send_alert(
         "🟣 <b>EMA50 Scanner Online</b>\n"
-        "2 independent signals every hour at :15\n\n"
-        "⚡ 1H EMA50 Close (above / below)\n"
-        "🕯 4H EMA50 Close (above / below / inside)"
+        "Scanning 4H every hour at :15\n\n"
+        "🟢 Closed ABOVE EMA50\n"
+        "🔴 Closed BELOW EMA50"
     )
     run_scan()
     while True:
